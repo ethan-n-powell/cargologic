@@ -1,0 +1,5 @@
+circuit_id,source,truth_table,inputs,payload_bp,recombinases,outcome,reported_fold_change,reported_construct_bp,vector,notes
+# This file intentionally ships with no data rows.
+# Published circuit data is not redistributed here. See README.md for exactly where to
+# get each dataset (BLADE 2017 is the priority) and how to map it onto these columns.
+# Rows whose circuit_id begins with '#' are skipped by the loader.

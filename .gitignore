@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv*/
+venv/
+env/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Benchmark output (regenerate with validation/benchmark.py)
+results.csv
+*.gb
+
+# ----------------------------------------------------------------------------
+# Separate projects that happen to live in the same working folder.
+# These are NOT part of cargologic and are excluded deliberately rather than
+# committed into this repo. Remove these lines if you want them tracked here,
+# though they would each be better off as their own repository.
+# ----------------------------------------------------------------------------
+rmpredict/
+cre-specificity-bench/
+
+# ----------------------------------------------------------------------------
+# Private working notes, excluded on purpose.
+# These are personal strategy documents (candidate project ideas, scoring,
+# prior-art assessments). They should not end up in a public repository.
+# ----------------------------------------------------------------------------
+100-synbio-startup-ideas.md
+TOP-10-verified.md

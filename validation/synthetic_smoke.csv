@@ -1,0 +1,21 @@
+circuit_id,source,truth_table,inputs,payload_bp,recombinases,outcome,reported_fold_change,reported_construct_bp,vector,notes
+# ============================================================================
+# FABRICATED DATA. These rows were invented to exercise benchmark.py.
+# They are NOT measurements and NOT drawn from any publication.
+# Every statistic computed from this file is meaningless. Do not report it.
+# The 'source' column says SYNTHETIC so the harness prints a warning.
+# ============================================================================
+syn_and,SYNTHETIC,0001,A;B,720,Cre;FlpO,worked,42,2100,plasmid,fabricated
+syn_or,SYNTHETIC,0111,A;B,720,Cre;FlpO,worked,35,2400,plasmid,fabricated
+syn_a_not_b,SYNTHETIC,0010,A;B,720,Cre;FlpO,worked,12,1900,plasmid,fabricated
+syn_nand,SYNTHETIC,1110,A;B,720,Cre;FlpO,worked,18,3400,plasmid,fabricated
+syn_xor,SYNTHETIC,0110,A;B,720,Cre;FlpO,partial,6,3600,plasmid,fabricated
+syn_xnor,SYNTHETIC,1001,A;B,720,Cre;FlpO,failed,2,3700,plasmid,fabricated
+syn_not_a,SYNTHETIC,1100,A;B,720,Cre;FlpO,worked,22,1700,plasmid,fabricated
+syn_buffer_b,SYNTHETIC,0101,A;B,720,Cre;FlpO,worked,48,1850,plasmid,fabricated
+syn_and3,SYNTHETIC,00000001,A;B;C,720,Cre;FlpO;Dre,worked,15,2600,plasmid,fabricated
+syn_and_not,SYNTHETIC,00000010,A;B;C,720,Cre;FlpO;Dre,partial,5,2500,plasmid,fabricated
+syn_majority3,SYNTHETIC,00010111,A;B;C,720,Cre;FlpO;Dre,failed,2,4100,plasmid,fabricated
+syn_car_and_not,SYNTHETIC,0010,A;B,1500,Cre;Bxb1,worked,25,2800,aav_single,fabricated
+syn_car_big,SYNTHETIC,0001,A;B,4104,Cre;FlpO,failed,1,5400,aav_single,fabricated
+syn_or3,SYNTHETIC,01111111,A;B;C,720,Cre;FlpO;Dre,worked,20,3500,lentivirus,fabricated

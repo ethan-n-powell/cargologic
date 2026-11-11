@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cargologic"
+version = "0.1.0"
+description = "Payload-constrained logic compilation for mammalian recombinase circuits"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = [
+    "synthetic biology",
+    "genetic circuits",
+    "recombinase",
+    "AAV",
+    "gene therapy",
+    "genetic design automation",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+# No runtime dependencies. Standard library only, deliberately: this should be
+# trivial to install in a lab environment that already fights with its Python.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+cargologic = "cargologic.cli:main"
+
+[tool.setuptools]
+packages = ["cargologic"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
