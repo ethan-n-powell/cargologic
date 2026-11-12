@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 class RecombinaseSystem:
     name: str
     site_name: str
-    site_bp: int
+    site_bp: int  # total bp for a PAIR of sites, not one site
     cds_bp: int
     excision_efficiency: tuple[float, float]
     leak: tuple[float, float]  # excision fraction with no recombinase supplied
@@ -66,7 +66,7 @@ RECOMBINASES: dict[str, RecombinaseSystem] = {
     "Cre": RecombinaseSystem(
         name="Cre",
         site_name="loxP",
-        site_bp=34,
+        site_bp=68,  # two 34 bp loxP sites
         cds_bp=1032,
         excision_efficiency=(0.85, 0.99),
         leak=(0.001, 0.05),
@@ -77,7 +77,7 @@ RECOMBINASES: dict[str, RecombinaseSystem] = {
     "FlpO": RecombinaseSystem(
         name="FlpO",
         site_name="FRT",
-        site_bp=34,
+        site_bp=68,  # two 34 bp FRT sites
         cds_bp=1272,
         excision_efficiency=(0.70, 0.95),
         leak=(0.001, 0.03),
@@ -88,7 +88,7 @@ RECOMBINASES: dict[str, RecombinaseSystem] = {
     "Dre": RecombinaseSystem(
         name="Dre",
         site_name="rox",
-        site_bp=32,
+        site_bp=64,  # two 32 bp rox sites
         cds_bp=1035,
         excision_efficiency=(0.70, 0.95),
         leak=(0.001, 0.03),
@@ -98,7 +98,7 @@ RECOMBINASES: dict[str, RecombinaseSystem] = {
     "VCre": RecombinaseSystem(
         name="VCre",
         site_name="VloxP",
-        site_bp=34,
+        site_bp=68,  # two 34 bp VloxP sites
         cds_bp=1035,
         excision_efficiency=(0.60, 0.90),
         leak=(0.001, 0.03),

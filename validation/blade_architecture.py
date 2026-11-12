@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cargologic as cl  # noqa: E402
 from cargologic.parts import JUNCTION_BP, KOZAK_BP, Parts  # noqa: E402
+from cargologic.synthesis import CircuitSpec, PartChoice, build_design  # noqa: E402
 
 # Recombination sites BLADE uses, from the paper: lox sites loxP, lox2272, loxN for Cre;
 # FRT sites FRT, F3, F14 for Flp; VloxP and Vlox2272 for VCre. All are 34 bp.
@@ -72,20 +73,26 @@ def blade_size(n_inputs: int, ones: set[int], parts: Parts,
 
 def cargologic_size(expr_ones: set[int], n_inputs: int, payload_bp: int,
                     promoter: str, terminator: str) -> Layout:
-    """Size cargologic produces for the same function, with parts held equal."""
-    column = "".join("1" if m in expr_ones else "0" for m in range(1 << n_inputs))
-    r = cl.compile_circuit(
-        column,
-        payload=payload_bp,
-        as_table=True,
+    """Size of the PRODUCT-TERM layout for the same function, parts held equal.
+
+    Pinned to product terms with force_strategy. The compiler now also offers the BLADE
+    template and picks whichever is smaller, so letting it choose freely would compare
+    blade against itself and always tie.
+    """
+    f = cl.parse_table(
+        "".join("1" if m in expr_ones else "0" for m in range(1 << n_inputs)),
         inputs=[chr(ord("A") + i) for i in range(n_inputs)],
-        optimise=False,
-        promoter=promoter,
-        terminator=terminator,
-        blocker=terminator,
-        n_samples=1,
     )
-    d = r.design
+    parts = Parts()
+    spec = CircuitSpec(
+        inputs=f.inputs, functions=[f], payloads={f.name: parts.resolve_payload(payload_bp)}
+    )
+    d = build_design(
+        spec,
+        parts,
+        PartChoice(promoter=promoter, blocker=terminator, terminator=terminator),
+        force_strategy="__product__",
+    )
     n_prom = sum(1 for e in d.elements if e.kind == "promoter")
     n_pay = sum(1 for e in d.elements if e.kind == "payload")
     n_sites = sum(1 for e in d.elements if e.kind == "site")
@@ -162,7 +169,7 @@ def main() -> int:
     print("  WHAT THIS SHOWS")
     print("-" * 78)
     print("""  The product-term layout is smaller almost everywhere: 13/15 two-input and
-  246/255 three-input functions. BLADE instantiates all 2^N addresses whether ON
+  245/255 three-input functions. BLADE instantiates all 2^N addresses whether ON
   or OFF and pays 2^N-1 site pairs, so its template grows as 2^N while a minimised
   cover usually does not. This holds across payload sizes from 300 to 4500 bp, so
   it is not an artefact of the cargo chosen.
@@ -172,19 +179,28 @@ def main() -> int:
   at three inputs, which fits the usual story: parity does not factor, so its cover
   needs one term per ON state and the layout degenerates into a promoter per address.
 
-  But parity is not the whole rule. Nine three-input functions lose, only two of
+  But parity is not the whole rule. Ten three-input functions lose, only two of
   which are parity. The obvious tightening, "BLADE wins when no two minterms merge
-  and at least two states are ON", was tested here and FALSIFIED: it mispredicts 17
-  of the 255 three-input functions. The real boundary is arithmetic. It falls out of
+  and at least two states are ON", was tested here and FALSIFIED: it mispredicts 17 of the
+  255 three-input functions. The real boundary is arithmetic. It falls out of
   how n_terms x (promoter + payload + polyA) compares with one promoter plus 2^N
   addresses, and there is no clean combinatorial statement of it.
 
   The actionable part does not depend on characterising the boundary. A compiler can
   simply price both layouts and take the smaller, which is cheap because both are
-  closed-form. cargologic does not currently do this: it always builds product terms,
-  which is the wrong call on 2/15 and 9/255 of these functions, by up to 1040 bp.
-  Adding the BLADE template as a third strategy alongside independent and
-  tandem_promoters would close that gap.""")
+  closed-form.
+
+  cargologic now does exactly that: "blade" is a third strategy alongside independent
+  and tandem_promoters, and build_design prices them and keeps the smaller. The numbers
+  above pin cargologic to product terms with force_strategy so the comparison still
+  means something; left to choose, it now takes the better of the two everywhere.
+
+  Two things fell out of adding it. The BLADE template often wins on dynamic range as
+  well as size, because it has no blocker terminator for transcription to read through:
+  for A AND B it costs 117 bp more than product terms and returns 3.4x the ON/OFF ratio.
+  And building this comparison caught a bug, since two independent implementations of
+  the same sizing disagreed: recombinase site pairs were being counted at half length,
+  because the part library mixed per-site and per-pair figures.""")
     print()
     print("-" * 78)
     print("  ASSUMPTIONS, SO THE NUMBERS CAN BE CHECKED")

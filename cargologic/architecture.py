@@ -68,9 +68,14 @@ class Design:
     recombinase_elements: list[Element] = field(default_factory=list)
     include_recombinases: bool = False
     notes: list[str] = field(default_factory=list)
+    # Set by layouts whose element order is not cassette-by-cassette, such as the
+    # BLADE template where one promoter sits upstream of every address.
+    ordered_elements: list[Element] | None = None
 
     @property
     def elements(self) -> list[Element]:
+        if self.ordered_elements is not None:
+            return self.ordered_elements + self.recombinase_elements
         return (
             [e for c in self.cassettes for e in c.elements]
             + self.shared_payload_elements
@@ -80,6 +85,8 @@ class Design:
     @property
     def circuit_bp(self) -> int:
         """Length of the logic circuit itself, excluding recombinase expression."""
+        if self.ordered_elements is not None:
+            return sum(e.bp for e in self.ordered_elements)
         return sum(c.bp for c in self.cassettes) + sum(
             e.bp for e in self.shared_payload_elements
         )
@@ -341,3 +348,88 @@ def build_recombinase_elements(
     els.append(Element("spacer", "junction", JUNCTION_BP))
     els.append(Element("terminator", terminator.name, terminator.bp, ""))
     return els
+
+
+def build_blade(
+    n_inputs: int,
+    on_minterms: set[int],
+    outputs: list[str],
+    payloads: list[Payload],
+    promoter: Promoter,
+    terminator: Terminator,
+    recombinases: list[RecombinaseSystem],
+    linker: Linker | None,
+) -> tuple[list[Cassette], list[Element]]:
+    """Lay out the BLADE template: one promoter upstream of 2^N addresses.
+
+    Weinberg et al. 2017 state the structure directly: a single transcriptional layer
+    with one promoter upstream of up to 2^N addresses surrounded by recombination
+    sites, and 2^N-1 recombination site pairs. Every address is physically present;
+    an OFF address holds a terminator alone.
+
+    Wins over product terms when the cover cannot factor, parity being the clearest
+    case, because it pays one promoter rather than one per term.
+    """
+    n_addresses = 1 << n_inputs
+    full_mask = n_addresses - 1
+    ordered: list[Element] = [
+        Element("promoter", promoter.name, promoter.bp, "shared by every address")
+    ]
+    cassettes: list[Cassette] = []
+
+    for address in range(n_addresses):
+        bits = format(address, f"0{n_inputs}b")
+        if address > 0:
+            # 2^N-1 site pairs in total, one boundary between consecutive addresses.
+            i = (address - 1) % n_inputs
+            rec = recombinases[i]
+            left, right = _sites_for(rec, i, f"address {bits} boundary")
+            ordered.append(left)
+            ordered.append(right)
+
+        if address in on_minterms:
+            els: list[Element] = []
+            for pi, pay in enumerate(payloads):
+                els.append(Element("kozak", "Kozak", KOZAK_BP))
+                els.append(
+                    Element(
+                        "payload",
+                        pay.name,
+                        pay.bp,
+                        outputs[pi] if pi < len(outputs) else "",
+                    )
+                )
+                if linker is not None and pi < len(payloads) - 1:
+                    els.append(Element("linker", linker.name, linker.bp, "co-expression"))
+            els.append(
+                Element("terminator", terminator.name, terminator.bp, f"address {bits}")
+            )
+            ordered.extend(els)
+            implicant = Implicant(bits=address, mask=full_mask, n=n_inputs)
+            cassettes.append(
+                Cassette(
+                    outputs=list(outputs),
+                    payloads=list(payloads),
+                    promoter=promoter,
+                    implicant=implicant,
+                    positive_literals=implicant.positive_literals(),
+                    negative_literals=implicant.negative_literals(),
+                    blocker=terminator,
+                    terminator=terminator,
+                    elements=els,
+                    carries_payload=True,
+                    linker=linker,
+                )
+            )
+        else:
+            ordered.append(
+                Element(
+                    "terminator",
+                    terminator.name,
+                    terminator.bp,
+                    f"address {bits} is OFF",
+                )
+            )
+        ordered.append(Element("spacer", "junction", JUNCTION_BP))
+
+    return cassettes, ordered

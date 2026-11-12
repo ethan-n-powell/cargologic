@@ -13,8 +13,8 @@ cargologic "A and not B" --payload CAR_2g --vector aav_single
 ```
 ================================================================================
   FITS  -  AAV (single vector)
-  1794 bp circuit, 1 cassette(s)
-  +2646 bp against a 4440 bp budget (40% used)
+  1862 bp circuit, 1 cassette(s)
+  +2578 bp against a 4440 bp budget (42% used)
   predicted ON/OFF ratio ~6x (80% interval 4-9x)
 ================================================================================
 ```
@@ -157,44 +157,68 @@ r = cl.compile_circuit("A & !B", payload=1500, parts=p)
 |---|---|---|
 | Boolean minimisation | always | ~1–2 kb per term eliminated |
 | Shared payload behind tandem gated promoters | when all terms share the same negative literals | `(k−1) × (payload + polyA)` |
+| BLADE template instead of product terms | when the cover doesn't factor, parity being the clear case | up to ~1 kb, and usually better dynamic range |
 | 2A-linked cassette merging | two outputs firing in identical states | one promoter + polyA per merged output |
 | Part downsizing search | near the packaging limit | up to ~1.5 kb, traded against leak |
 
 OR and XOR both minimise to two terms, but OR's terms share negative literals so one
-payload copy serves both: **2405 bp versus 3588 bp** for the same payload.
+payload copy serves both: **2473 bp versus 3544 bp** for the same payload.
+
+### Three layouts, priced against each other
+
+The compiler builds all applicable layouts and takes the best, because which one wins is
+not predictable from the logic alone:
+
+- **independent** — one transcription unit per product term. Always valid.
+- **tandem_promoters** — gated promoters in tandem sharing one payload. Needs every term
+  to have the same negative literals.
+- **blade** — the template from Weinberg et al. 2017: one promoter upstream of 2^N
+  addresses with 2^N−1 recombination site pairs. Every address exists whether ON or OFF.
+
+`validation/blade_architecture.py` prices the first two against the third across every
+function of two and three inputs. Product terms win 13/15 and 245/255, stable across
+payloads from 300 to 4500 bp — the BLADE template grows as 2^N while a minimised cover
+usually doesn't. The exceptions include both parity functions at each input count, where
+the cover can't factor and product terms degenerate into a promoter per address.
+
+Building that comparison is also what caught a real bug: recombinase site pairs were
+being counted at half their true length, because the part library mixed per-site and
+per-pair figures. Two independent implementations disagreeing is how it surfaced.
 
 Near the limit there is no single best design, so you get the trade-off instead of a
-fabricated optimum. For a pure `A AND B`, spending 800 bp on a tighter blocker buys you
-three times the dynamic range:
+fabricated optimum. For a pure `A AND B`, 117 extra base pairs buys **3.4× the dynamic
+range**, by switching layout rather than by buying a tighter polyA:
 
 ```
 SIZE vs DYNAMIC RANGE (PARETO FRONT)  --  A & B
-     bp   ON/OFF   promoter  blocker   terminator
-   1849     9.5x   minCMV    SPA       SPA
-   2021    14.9x   minCMV    SV40pA    SPA
-   2201    19.5x   minCMV    bGHpA     SPA
-   2651    27.9x   minCMV    tandem    SPA
+     bp   ON/OFF   promoter  blocker   terminator   layout
+   1917     9.5x   minCMV    SPA       SPA          independent
+   2034    32.5x   minCMV    SV40pA    SPA          blade
 ```
 
 ### A design rule falls out of this
 
-Run the same search on `A AND B AND NOT C` and the front **collapses to a single point**
-(1881 bp, 5.5×). Nothing you can buy with base pairs improves it.
+Run the same search on `A AND B AND NOT C` and the front **collapses to a single point**.
+Nothing you can buy with base pairs improves it.
 
-That is not a bug, it is the answer: whether spending AAV budget on a tighter terminator
-helps depends entirely on **whether your gate contains a NOT**.
+That is the answer, not a bug: what you can fix with budget depends on **what is actually
+holding the OFF state down**, and that differs by gate.
 
-| gate | limiting mechanism | does a tighter blocker help? |
-|---|---|---|
-| `A & B` | terminator read-through | yes — 800 bp buys 3× |
-| `A & B & C` | terminator read-through | yes — same shape |
-| `A \| B` | spontaneous recombinase activity | partly — 800 bp buys 3× |
-| `A & B & !C` | incomplete excision | **no — front is one point** |
+| gate | chosen layout | limiting mechanism | can budget fix it? |
+|---|---|---|---|
+| `A & B` | blade | spontaneous recombinase activity | yes — 117 bp buys 3.4× |
+| `A & B & C` | independent | terminator read-through | yes — tighter polyA works |
+| `A \| B` | tandem_promoters | spontaneous recombinase activity | partly |
+| `A & B & !C` | independent | incomplete excision | **no — front is one point** |
 
-AND gates are gated only by blockers, so their OFF state is a terminator problem and
-tighter polyA signals fix it. Any gate with a NOT puts its OFF state behind a physical
-excision event, so the OFF floor is set by the fraction of cells that failed to excise —
-and no terminator reaches that. Spend the budget on a better recombinase instead.
+A gate held by a blocker has a terminator problem, and a tighter polyA fixes it. A gate
+with a NOT puts its OFF state behind a physical excision event, so the floor is set by
+the fraction of cells that failed to excise, and no terminator reaches that. Spend it on
+a better recombinase instead.
+
+Note what the BLADE layout does for `A & B`: it has no blocker at all, so there is no
+read-through path to leak, and its OFF states are set purely by recombinase behaviour.
+That is why it wins the dynamic range despite being slightly larger.
 
 ## Validation
 

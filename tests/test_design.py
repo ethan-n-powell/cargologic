@@ -3,6 +3,7 @@
 import pytest
 
 import cargologic as cl
+from cargologic import leakage
 from cargologic.architecture import can_share_payload
 from cargologic.delivery import (
     lentiviral_relative_titre,
@@ -53,12 +54,57 @@ def test_or_can_share_payload_but_xor_cannot():
 
 
 def test_sharing_makes_or_smaller_than_xor_at_equal_term_count():
+    """Both minimise to two terms, but OR can share a payload and XOR cannot."""
     orr = cl.compile_circuit("A | B", payload=1500)
     xor = cl.compile_circuit("A ^ B", payload=1500)
     assert orr.covers["out"].n_terms == xor.covers["out"].n_terms == 2
     assert orr.design.strategy == "tandem_promoters"
-    assert xor.design.strategy == "independent"
     assert orr.circuit_bp < xor.circuit_bp
+
+
+def test_parity_picks_the_blade_template():
+    """XOR cannot factor, so product terms pay a promoter per address and lose."""
+    xor = cl.compile_circuit("A ^ B", payload=1500)
+    assert xor.design.strategy == "blade"
+
+    f = parse_expression("A ^ B")
+    spec = CircuitSpec(
+        inputs=f.inputs, functions=[f], payloads={"out": Parts().resolve_payload(1500)}
+    )
+    choice = PartChoice(promoter="EFS", blocker="bGHpA", terminator="bGHpA")
+    product = build_design(spec, Parts(), choice, force_strategy="__product__")
+    blade = build_design(spec, Parts(), choice, force_strategy="blade")
+    assert blade.total_bp < product.total_bp
+
+
+def test_blade_template_has_the_published_address_and_site_counts():
+    """Weinberg 2017: one promoter, 2^N addresses, 2^N-1 recombination site pairs."""
+    for n, expr in ((2, "A ^ B"), (3, "A ^ B ^ C")):
+        f = parse_expression(expr)
+        spec = CircuitSpec(
+            inputs=f.inputs,
+            functions=[f],
+            payloads={"out": Parts().resolve_payload(800)},
+        )
+        d = build_design(spec, Parts(), PartChoice(), force_strategy="blade")
+        promoters = sum(1 for e in d.elements if e.kind == "promoter")
+        site_pairs = sum(1 for e in d.elements if e.kind == "site") // 2
+        assert promoters == 1, f"{n} inputs: one shared promoter"
+        assert site_pairs == (1 << n) - 1, f"{n} inputs: 2^N-1 site pairs"
+
+
+def test_blade_preserves_the_truth_table():
+    """Every ON state must land on an address that carries the payload."""
+    for expr in ("A ^ B", "A & B", "A | B", "!(A ^ B)"):
+        f = parse_expression(expr)
+        spec = CircuitSpec(
+            inputs=f.inputs,
+            functions=[f],
+            payloads={"out": Parts().resolve_payload(600)},
+        )
+        d = build_design(spec, Parts(), PartChoice(), force_strategy="blade")
+        on_addresses = {c.implicant.bits for c in d.cassettes}
+        assert on_addresses == f.ones, expr
 
 
 def test_identical_logic_on_two_outputs_shares_one_cassette():
@@ -179,11 +225,30 @@ def test_improving_excision_helps_a_not_gate_but_better_terminators_do_not():
     )
 
 
-def test_pure_and_gate_has_no_off_state_requiring_excision():
-    """AND uses only blockers, so its OFF states are terminator-limited."""
-    rep = cl.compile_circuit("A & B", payload=1500, n_samples=800).leakage["out"]
+def test_product_term_and_gate_is_terminator_limited():
+    """With blockers, an AND OFF state is held down by a terminator.
+
+    Pinned to the product-term layout: with a free choice the compiler may pick the
+    BLADE template, which has no blocker and so fails by a different mechanism.
+    """
+    rep = cl.compile_circuit(
+        "A & B", payload=1500, optimise=False, promoter="EFS",
+        blocker="SPA", terminator="SPA", n_samples=800,
+    ).leakage["out"]
     assert rep.limiting is not None
     assert rep.limiting.name == "terminator read-through"
+
+
+def test_blade_and_gate_fails_by_landing_in_the_wrong_address():
+    """BLADE has no blocker, so its OFF states are set by recombinase behaviour."""
+    f = parse_expression("A & B")
+    spec = CircuitSpec(
+        inputs=f.inputs, functions=[f], payloads={"out": Parts().resolve_payload(1500)}
+    )
+    d = build_design(spec, Parts(), PartChoice(), force_strategy="blade")
+    rep = leakage.predict(d, "out", n_samples=800, seed=3)
+    assert rep.limiting is not None
+    assert rep.limiting.name != "terminator read-through"
 
 
 def test_constant_on_has_no_off_state():
@@ -292,22 +357,28 @@ def test_parts_override_round_trips():
     p = Parts()
     p.override_recombinase("Cre", excision_efficiency=(0.5, 0.6))
     assert p.recombinases["Cre"].excision_efficiency == (0.5, 0.6)
-    assert p.recombinases["Cre"].site_bp == 34  # untouched
+    assert p.recombinases["Cre"].site_bp == 68  # untouched; a pair of loxP
 
 
 def test_not_gates_cannot_be_rescued_by_better_terminators_but_and_gates_can():
     """An AND OFF state is held by a terminator, a NOT OFF state by an excision event."""
-    and_gate = cl.compile_circuit("A & B", payload="CAR_2g", n_samples=600)
+    and_gate = cl.compile_circuit(
+        "A & B", payload="CAR_2g", optimise=False, promoter="EFS",
+        blocker="SPA", terminator="SPA", n_samples=600,
+    )
     not_gate = cl.compile_circuit("A & B & !C", payload="CAR_2g", n_samples=600)
 
     assert and_gate.leakage["out"].limiting.name == "terminator read-through"
     assert not_gate.leakage["out"].limiting.name == "incomplete excision"
 
-    assert len(and_gate.pareto) >= 3
-    best, worst = max(and_gate.pareto, key=lambda c: c.dynamic_range), min(
-        and_gate.pareto, key=lambda c: c.dynamic_range
-    )
+    # A blocker-only gate has a real size/leak trade-off to offer; a NOT gate does not,
+    # because no amount of terminator fixes an excision that did not happen.
+    and_front = cl.compile_circuit("A & B", payload="CAR_2g", n_samples=400).pareto
+    assert len(and_front) >= 2
+    best = max(and_front, key=lambda c: c.dynamic_range)
+    worst = min(and_front, key=lambda c: c.dynamic_range)
     assert best.dynamic_range > 2 * worst.dynamic_range
     assert best.circuit_bp > worst.circuit_bp
+    assert len(not_gate.pareto) == 1
 
     assert len(not_gate.pareto) == 1

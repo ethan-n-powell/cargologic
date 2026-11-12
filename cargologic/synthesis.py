@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from . import leakage
 from .architecture import (
+    build_blade,
     Design,
     build_cassette,
     build_recombinase_elements,
@@ -78,6 +79,78 @@ def _group_outputs(
     return [(names, covers[names[0]]) for names in groups.values()]
 
 
+
+def _try_blade(
+    spec: CircuitSpec,
+    group,
+    promoter,
+    terminator,
+    recs,
+    linker,
+    include_recombinases: bool,
+    parts: Parts,
+    choice: PartChoice,
+) -> Design | None:
+    """Build the BLADE template for a single output group, or None if inapplicable."""
+    names, cover = group
+    if not cover.terms:
+        return None
+    on_minterms = {m for t in cover.terms for m in t.minterms()}
+    if not on_minterms:
+        return None
+
+    payloads = [spec.payloads[nm] for nm in names]
+    cassettes, ordered = build_blade(
+        n_inputs=spec.n,
+        on_minterms=on_minterms,
+        outputs=names,
+        payloads=payloads,
+        promoter=promoter,
+        terminator=terminator,
+        recombinases=recs,
+        linker=linker if len(payloads) > 1 else None,
+    )
+
+    rec_elements = []
+    notes = [
+        f"BLADE template: one promoter upstream of {1 << spec.n} addresses with "
+        f"{(1 << spec.n) - 1} recombination site pairs. Chosen because the cover "
+        f"does not factor well enough for product terms to pay off."
+    ]
+    if include_recombinases:
+        rec_elements = build_recombinase_elements(recs, promoter, terminator, linker)
+        notes.append(
+            "Recombinase coding sequences are included in the budget. Published devices "
+            "almost always supply them separately, and carrying them is what usually "
+            "makes a design exceed AAV."
+        )
+
+    return Design(
+        inputs=list(spec.inputs),
+        recombinases=recs,
+        cassettes=cassettes,
+        strategy="blade",
+        recombinase_elements=rec_elements,
+        include_recombinases=include_recombinases,
+        notes=notes,
+        ordered_elements=ordered,
+    )
+
+
+def _blade_is_smaller(
+    blade: Design,
+    spec: CircuitSpec,
+    parts: Parts,
+    choice: PartChoice,
+    include_recombinases: bool,
+) -> bool:
+    """True when the BLADE template beats the product-term layout on length."""
+    product = build_design(
+        spec, parts, choice, include_recombinases, force_strategy="__product__"
+    )
+    return blade.total_bp < product.total_bp
+
+
 def build_design(
     spec: CircuitSpec,
     parts: Parts,
@@ -100,12 +173,32 @@ def build_design(
 
     covers = {f.name: f.minimise() for f in spec.functions}
 
+    groups = _group_outputs(spec, covers)
+
+    # The BLADE template is a whole-circuit layout, not a per-group one, so it only
+    # applies to a single output group. Cheap to price, so try it and keep it if smaller.
+    if force_strategy == "__product__":
+        force_strategy = None
+    elif force_strategy == "blade" or (force_strategy is None and len(groups) == 1):
+        blade = _try_blade(
+            spec, groups[0], promoter, terminator, recs, linker,
+            include_recombinases, parts, choice,
+        )
+        if blade is not None and (force_strategy == "blade" or _blade_is_smaller(
+            blade, spec, parts, choice, include_recombinases
+        )):
+            return blade
+        if force_strategy == "blade":
+            raise SynthesisError(
+                "blade requires a single output group with at least one ON state"
+            )
+
     cassettes = []
     shared_tail = []
     notes: list[str] = []
     strategies_used = set()
 
-    for names, cover in _group_outputs(spec, covers):
+    for names, cover in groups:
         payloads = [spec.payloads[nm] for nm in names]
         group_linker = linker if len(payloads) > 1 else None
         if len(names) > 1:

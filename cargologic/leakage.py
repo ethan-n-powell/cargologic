@@ -121,8 +121,33 @@ def _payload_present(neg_literals: list[int], p: Params) -> float:
     return out
 
 
+def _blade_level(design: Design, relevant: list[Cassette], p: Params) -> float:
+    """BLADE: the recombinase state selects which address is transcribed.
+
+    Each cell lands in whichever address its recombinases actually produced, so
+    incomplete excision shows up directly as cells sitting at the wrong address
+    rather than as a transcriptional leak.
+    """
+    n = len(design.inputs)
+    on_addresses = {c.implicant.bits for c in relevant}
+    strength = max(c.promoter.strength for c in relevant)
+
+    level = 0.0
+    for realised in range(1 << n):
+        prob = 1.0
+        for i in range(n):
+            f = p.fired[i]
+            prob *= f if (realised >> (n - 1 - i)) & 1 else 1.0 - f
+        if realised in on_addresses:
+            level += prob * strength
+    return level + p.terminator_readthrough * 0.02 * strength
+
+
 def _level(design: Design, relevant: list[Cassette], minterm: int, p: Params) -> float:
     """Predicted output level for one state under one parameter draw."""
+    if design.strategy == "blade":
+        return _blade_level(design, relevant, p)
+
     if design.strategy == "tandem_promoters":
         miss = 1.0
         floor_strength = 0.0
