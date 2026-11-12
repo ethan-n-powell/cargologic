@@ -1,5 +1,7 @@
 """Logic layer: parsing and minimisation correctness."""
 
+import random
+
 import pytest
 
 from cargologic.logic import (
@@ -11,9 +13,6 @@ from cargologic.logic import (
     parse_table,
     prime_implicants,
 )
-
-
-# ---------------------------------------------------------------------------- parsing
 
 
 @pytest.mark.parametrize(
@@ -97,12 +96,8 @@ def test_parse_table_rejects_non_power_of_two_column():
         parse_table("011")
 
 
-# ----------------------------------------------------------------------- minimisation
-
-
 def test_minimise_and():
-    f = parse_expression("A & B")
-    cov = f.minimise()
+    cov = parse_expression("A & B").minimise()
     assert cov.n_terms == 1
     assert cov.terms[0].positive_literals() == [0, 1]
     assert cov.terms[0].negative_literals() == []
@@ -111,25 +106,21 @@ def test_minimise_and():
 def test_minimise_collapses_or_to_single_literals():
     cov = parse_expression("A | B").minimise()
     assert cov.n_terms == 2
-    # Each term should be a single positive literal, not a full minterm.
     assert all(t.n_fixed == 1 for t in cov.terms)
 
 
 def test_minimise_exploits_dont_cares():
-    """A don't-care should let the cover shrink."""
-    strict = parse_table("1000").minimise()        # only !A!B
-    relaxed = parse_table("10x0").minimise()       # !A!B, with !A B free
+    strict = parse_table("1000").minimise()  # only !A!B
+    relaxed = parse_table("10x0").minimise()  # !A!B, with !A B free
     assert relaxed.n_literals <= strict.n_literals
 
 
 def test_minimise_xor_needs_two_terms():
-    cov = parse_expression("A ^ B").minimise()
-    assert cov.n_terms == 2
+    assert parse_expression("A ^ B").minimise().n_terms == 2
 
 
 def test_minimise_majority_needs_three_terms():
-    cov = parse_expression("MAJORITY3").minimise()
-    assert cov.n_terms == 3
+    assert parse_expression("MAJORITY3").minimise().n_terms == 3
 
 
 def test_minimise_tautology_is_one_ungated_term():
@@ -144,10 +135,7 @@ def test_minimise_contradiction_is_empty():
 
 @pytest.mark.parametrize("n", [1, 2, 3])
 def test_every_function_cover_reproduces_its_truth_table(n):
-    """The heart of it: minimisation must never change the function.
-
-    All 2, 16 and 256 functions of 1, 2 and 3 inputs.
-    """
+    """Minimisation must not change the function, over all functions of n inputs."""
     for f in all_functions(n):
         cov = f.minimise()
         for m in range(1 << n):
@@ -156,8 +144,6 @@ def test_every_function_cover_reproduces_its_truth_table(n):
 
 def test_four_input_functions_sample():
     """Spot-check 4 inputs, where exhaustive enumeration would be 65536 functions."""
-    import random
-
     rng = random.Random(0)
     for _ in range(200):
         ones = {m for m in range(16) if rng.random() < 0.5}
@@ -168,7 +154,7 @@ def test_four_input_functions_sample():
 
 def test_prime_implicants_ignore_pure_dont_care_cubes():
     primes = prime_implicants(2, ones={3}, dont_cares={0, 1, 2})
-    assert all(any(m == 3 for m in p.minterms()) for p in primes)
+    assert all(3 in p.minterms() for p in primes)
 
 
 def test_cover_cost_key_prefers_fewer_terms_then_fewer_blockers():
@@ -176,13 +162,10 @@ def test_cover_cost_key_prefers_fewer_terms_then_fewer_blockers():
     nand = parse_expression("!(A & B)").minimise()
     orr = parse_expression("A | B").minimise()
     assert nand.n_terms == orr.n_terms == 2
-    # NAND minimises to !B | !A -- all negative, so no blockers at all.
+    # NAND minimises to !B | !A, all negative, so no blockers.
     assert nand.n_positive_literals == 0
     assert orr.n_positive_literals == 2
     assert nand.cost_key < orr.cost_key
-
-
-# --------------------------------------------------------------------------- implicant
 
 
 def test_implicant_pattern_and_literals():

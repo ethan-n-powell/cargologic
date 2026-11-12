@@ -1,10 +1,4 @@
-"""Command line interface.
-
-    cargologic "A and not B" --payload CAR_2g --vector aav_single
-    cargologic AND3 --payload 1500 --vector aav_dual --genbank out.gb
-    cargologic "0110" --table --payload EGFP
-    cargologic --list-parts
-"""
+"""Command line interface."""
 
 from __future__ import annotations
 
@@ -42,8 +36,7 @@ def _list_parts() -> str:
         out.append(f"  {k:<12} {v.bp:>5} bp  {v.note}")
     out.append("\nVECTORS")
     for k, v in vector_catalogue().items():
-        budget = v.budget()
-        out.append(f"  {k:<14} budget {budget if budget else 'unbounded'}")
+        out.append(f"  {k:<14} budget {v.budget() or 'unbounded'}")
     out.append("\nNAMED GATES")
     out.append("  " + ", ".join(sorted(NAMED_GATES)))
     return "\n".join(out)
@@ -73,15 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--promoter", help="force a promoter instead of searching")
     p.add_argument("--blocker", help="force the blocker polyA")
     p.add_argument("--terminator", help="force the trailing polyA")
-    p.add_argument("--no-optimise", action="store_true", help="skip the part search")
+    p.add_argument("--no-optimise", action="store_true",
+                   help="skip the part search")
     p.add_argument("--min-dynamic-range", type=float, default=10.0,
+                   metavar="MIN_DYNAMIC_RANGE",
                    help="dynamic-range floor the search must clear (default 10)")
     p.add_argument("--samples", type=int, default=2000,
                    help="Monte-Carlo samples for the behaviour model (default 2000)")
     p.add_argument("--genbank", metavar="PATH", help="write a GenBank feature table")
     p.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     p.add_argument("--width", type=int, default=80, help="report width")
-    p.add_argument("--list-parts", action="store_true", help="show the part library and exit")
+    p.add_argument("--list-parts", action="store_true",
+                   help="show the part library and exit")
     p.add_argument("--all-two-input", action="store_true",
                    help="compile all 16 two-input functions as a self-check")
     p.add_argument("--version", action="version", version=f"cargologic {__version__}")
@@ -130,8 +126,7 @@ def _json_payload(result) -> dict:
         "behaviour": {
             name: {
                 "dynamic_range_median": (
-                    None if rep.dynamic_range_median == float("inf")
-                    else rep.dynamic_range_median
+                    None if rep.dynamic_range_median == float("inf") else rep.dynamic_range_median
                 ),
                 "dynamic_range_p10": (
                     None if rep.dynamic_range_lo == float("inf") else rep.dynamic_range_lo
@@ -160,7 +155,8 @@ def _json_payload(result) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     if args.list_parts:
         print(_list_parts())
@@ -170,13 +166,11 @@ def main(argv: list[str] | None = None) -> int:
         return _self_check(args)
 
     if not args.logic:
-        build_parser().print_help()
+        parser.print_help()
         return 2
 
     inputs = [s.strip() for s in args.inputs.split(",")] if args.inputs else None
-    recs = (
-        [s.strip() for s in args.recombinases.split(",")] if args.recombinases else None
-    )
+    recs = [s.strip() for s in args.recombinases.split(",")] if args.recombinases else None
 
     try:
         result = compile_circuit(
@@ -212,12 +206,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _self_check(args) -> int:
-    """Compile every two-input Boolean function.
-
-    BLADE demonstrated all 16 experimentally, so a compiler that cannot emit a design
-    for each is wrong. This is a correctness check on the compiler, not a claim about
-    biological performance.
-    """
+    """Compile every two-input Boolean function as a compiler correctness check."""
     print("Compiling all 16 two-input Boolean functions")
     print(f"payload={args.payload}  vector={args.vector}")
     print()
@@ -225,8 +214,7 @@ def _self_check(args) -> int:
     print("-" * 66)
     failures = 0
     for f in all_functions(2):
-        # Specify each function as an explicit output column so constant-0 and
-        # constant-1 are expressible (a minterm list cannot represent the empty set).
+        # A full output column; a minterm list cannot express constant 0 or constant 1.
         column = "".join("1" if m in f.ones else "0" for m in range(4))
         try:
             r = compile_circuit(
@@ -243,7 +231,10 @@ def _self_check(args) -> int:
             continue
         cov = next(iter(r.covers.values()))
         rep = next(iter(r.leakage.values()))
-        dr = "inf" if rep.dynamic_range_median == float("inf") else f"{rep.dynamic_range_median:.0f}x"
+        dr = (
+            "inf" if rep.dynamic_range_median == float("inf")
+            else f"{rep.dynamic_range_median:.0f}x"
+        )
         print(
             f"{f.name:>4}  {cov.to_str(f.inputs):<30} {cov.n_terms:>5} "
             f"{r.circuit_bp:>6} {'y' if r.feasible else 'n':>5} {dr:>8}"

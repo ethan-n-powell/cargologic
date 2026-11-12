@@ -1,40 +1,5 @@
 #!/usr/bin/env python3
-"""Retrospective benchmark: does the compiler agree with published circuits?
-
-WHY THIS FILE IS THE POINT OF THE PROJECT
------------------------------------------
-Anyone can write a circuit compiler. Nobody has published an evaluation of whether
-model-based mammalian circuit design actually predicts which published circuits worked.
-The ~113 circuits in the BLADE paper, the ~189 in CREATE, and the 256 predicted by the
-BLADE mechanistic model are a free, already-paid-for test set, and no wet lab is needed
-to use them.
-
-The result is publishable whichever way it falls. If the compiler ranks working circuits
-above broken ones, that is a validated design tool. If it does not, that is a quantified
-negative result on mammalian composability -- which is arguably the more useful paper,
-and it is the honest outcome to be prepared for.
-
-WHAT IS SCORED
---------------
-1. Size accuracy      Computed length vs the construct length reported in the paper.
-                      This checks arithmetic and should be near-exact. If it is not,
-                      the part library is wrong before anything else is.
-2. Feasibility recall Of circuits that were built and worked, how many does the
-                      compiler call feasible? Should be ~100%; anything less is a
-                      compiler bug, not a biology finding.
-3. Discrimination     Does predicted dynamic range rank working circuits above failed
-                      ones? Reported as AUC. 0.5 is chance.
-4. Calibration        Spearman correlation between predicted and measured fold-change.
-                      Expect this to be the weakest number, and report it anyway.
-
-THE DATA IS NOT IN THIS REPOSITORY
-----------------------------------
-See README.md for exactly where to get each dataset. `circuits.csv` ships as a header
-only. `synthetic_smoke.csv` contains FABRICATED rows whose only purpose is to exercise
-this script; never report a number computed from it.
-
-    python validation/benchmark.py validation/circuits.csv
-"""
+"""Retrospective benchmark of the compiler against published circuits."""
 
 from __future__ import annotations
 
@@ -43,7 +8,7 @@ import csv
 import itertools
 import math
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -54,8 +19,6 @@ from cargologic.logic import LogicError  # noqa: E402
 
 @dataclass
 class Record:
-    """One published circuit."""
-
     circuit_id: str
     source: str
     truth_table: str
@@ -88,34 +51,37 @@ class Scored:
     error: str | None = None
 
 
+def _opt_float(raw: dict[str, str], key: str) -> float | None:
+    v = (raw.get(key) or "").strip()
+    return float(v) if v else None
+
+
+def _opt_int(raw: dict[str, str], key: str) -> int | None:
+    v = (raw.get(key) or "").strip()
+    return int(v) if v else None
+
+
+def _split(raw: dict[str, str], key: str) -> list[str]:
+    return [s.strip() for s in (raw.get(key) or "").split(";") if s.strip()]
+
+
 def load(path: Path) -> list[Record]:
     rows: list[Record] = []
     with path.open() as fh:
         for raw in csv.DictReader(fh):
             if not raw.get("circuit_id") or raw["circuit_id"].lstrip().startswith("#"):
                 continue
-
-            def opt_float(key: str) -> float | None:
-                v = (raw.get(key) or "").strip()
-                return float(v) if v else None
-
-            def opt_int(key: str) -> int | None:
-                v = (raw.get(key) or "").strip()
-                return int(v) if v else None
-
-            inputs = [s.strip() for s in (raw.get("inputs") or "").split(";") if s.strip()]
-            recs = [s.strip() for s in (raw.get("recombinases") or "").split(";") if s.strip()]
             rows.append(
                 Record(
                     circuit_id=raw["circuit_id"].strip(),
                     source=(raw.get("source") or "").strip(),
                     truth_table=(raw.get("truth_table") or "").strip(),
-                    inputs=inputs or None,
+                    inputs=_split(raw, "inputs") or None,
                     payload_bp=int(raw.get("payload_bp") or 720),
-                    recombinases=recs or None,
+                    recombinases=_split(raw, "recombinases") or None,
                     outcome=(raw.get("outcome") or "unknown").strip().lower(),
-                    reported_fold_change=opt_float("reported_fold_change"),
-                    reported_construct_bp=opt_int("reported_construct_bp"),
+                    reported_fold_change=_opt_float(raw, "reported_fold_change"),
+                    reported_construct_bp=_opt_int(raw, "reported_construct_bp"),
                     vector=(raw.get("vector") or "plasmid").strip() or "plasmid",
                     notes=(raw.get("notes") or "").strip(),
                 )
@@ -150,11 +116,8 @@ def score_one(rec: Record, n_samples: int = 600) -> Scored:
     )
 
 
-# ------------------------------------------------------------------ statistics, no deps
-
-
 def spearman(xs: list[float], ys: list[float]) -> float | None:
-    """Rank correlation. Returns None if there is not enough variation to compute one."""
+    """Rank correlation, or None if there is not enough variation to compute one."""
     if len(xs) < 3:
         return None
 
@@ -184,16 +147,13 @@ def spearman(xs: list[float], ys: list[float]) -> float | None:
 
 
 def auc(positives: list[float], negatives: list[float]) -> float | None:
-    """Mann-Whitney U / ROC AUC. Probability a random positive outranks a random negative."""
+    """Probability a random positive outranks a random negative."""
     if not positives or not negatives:
         return None
     wins = 0.0
     for p, n in itertools.product(positives, negatives):
         wins += 1.0 if p > n else (0.5 if p == n else 0.0)
     return wins / (len(positives) * len(negatives))
-
-
-# ------------------------------------------------------------------------------ report
 
 
 def report(scored: list[Scored], warn_synthetic: bool = False) -> str:
@@ -223,7 +183,6 @@ def report(scored: list[Scored], warn_synthetic: bool = False) -> str:
         for s in errs[:10]:
             out.append(f"    {s.record.circuit_id:<16} {s.error}")
 
-    # ---------------------------------------------------------------- 1. size accuracy
     sized = [s for s in ok if s.record.reported_construct_bp]
     out.append("")
     out.append("-" * 76)
@@ -235,13 +194,10 @@ def report(scored: list[Scored], warn_synthetic: bool = False) -> str:
         errors = [s.predicted_bp - s.record.reported_construct_bp for s in sized]
         abs_err = [abs(e) for e in errors]
         mae = sum(abs_err) / len(abs_err)
-        rel = [
-            abs(e) / s.record.reported_construct_bp
-            for e, s in zip(errors, sized)
-        ]
+        rel = sorted(abs(e) / s.record.reported_construct_bp for e, s in zip(errors, sized))
         out.append(f"  n                    {len(sized)}")
         out.append(f"  mean absolute error  {mae:.0f} bp")
-        out.append(f"  median rel. error    {sorted(rel)[len(rel) // 2] * 100:.1f}%")
+        out.append(f"  median rel. error    {rel[len(rel) // 2] * 100:.1f}%")
         out.append(f"  worst                {max(abs_err)} bp")
         out.append("")
         out.append(f"  {'circuit':<18}{'reported':>10}{'predicted':>11}{'delta':>9}")
@@ -252,7 +208,6 @@ def report(scored: list[Scored], warn_synthetic: bool = False) -> str:
                 f"{s.predicted_bp:>11}{d:>+9}"
             )
 
-    # ------------------------------------------------------- 2. feasibility recall
     worked = [s for s in ok if s.record.worked is True]
     out.append("")
     out.append("-" * 76)
@@ -273,7 +228,6 @@ def report(scored: list[Scored], warn_synthetic: bool = False) -> str:
                     f"in {s.record.vector}  <- investigate: likely a part-size error"
                 )
 
-    # ------------------------------------------------------------ 3. discrimination
     pos = [
         s.predicted_fold_change
         for s in ok
@@ -309,7 +263,6 @@ def report(scored: list[Scored], warn_synthetic: bool = False) -> str:
         )
         out.append(f"  interpretation       {verdict}")
 
-    # --------------------------------------------------------------- 4. calibration
     paired = [
         (s.predicted_fold_change, s.record.reported_fold_change)
         for s in ok
@@ -325,9 +278,8 @@ def report(scored: list[Scored], warn_synthetic: bool = False) -> str:
         rho = spearman([p for p, _ in paired], [m for _, m in paired])
         out.append(f"  n                    {len(paired)}")
         out.append(f"  Spearman rho         {rho:.3f}" if rho is not None else "  Spearman rho  n/a")
-        ratios = [p / m for p, m in paired if m]
+        ratios = sorted(p / m for p, m in paired if m)
         if ratios:
-            ratios.sort()
             out.append(
                 f"  predicted/measured   median {ratios[len(ratios) // 2]:.2f}x, "
                 f"range {ratios[0]:.2f}-{ratios[-1]:.2f}x"
@@ -340,7 +292,6 @@ def report(scored: list[Scored], warn_synthetic: bool = False) -> str:
                 "  means it is uninformative, which is the finding worth publishing."
             )
 
-    # ------------------------------------------------------------------- mechanisms
     mechs: dict[str, int] = {}
     for s in ok:
         if s.limiting:
@@ -374,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     if not records:
         print(
             f"No circuits in {args.csv}.\n\n"
-            f"This file ships empty on purpose -- the published circuit data is not\n"
+            f"This file ships empty: the published circuit data is not\n"
             f"redistributed here. See {args.csv.parent / 'README.md'} for exactly where\n"
             f"to get each dataset, or run against synthetic_smoke.csv to exercise the\n"
             f"harness (those numbers are fabricated and must not be reported).",

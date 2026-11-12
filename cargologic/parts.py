@@ -1,17 +1,4 @@
-"""Part library for recombinase-based mammalian logic circuits.
-
-SIZES are hard facts: base-pair lengths of well-known sequence elements. Treat them as
-reliable to within a few bp (constructs vary in exactly where people trim a promoter).
-
-EFFICIENCIES AND LEAK RATES ARE ESTIMATES. They are order-of-magnitude values drawn from
-the mammalian recombinase literature, and they vary enormously with cell type, delivery
-method, recombinase dose and site context. They are here so the compiler can RANK designs
-and propagate uncertainty -- not so it can predict a number you could put in a grant.
-Every one carries an explicit range. Override them with your own measurements whenever
-you have them; that is what `Parts.override()` is for.
-
-If you only trust one output of this tool, trust the size arithmetic.
-"""
+"""Part library for recombinase-based mammalian logic circuits."""
 
 from __future__ import annotations
 
@@ -20,41 +7,27 @@ from dataclasses import dataclass, field, replace
 
 @dataclass(frozen=True)
 class RecombinaseSystem:
-    """A site-specific recombinase and its recognition sites.
-
-    excision_efficiency: fraction of cells in which a flanked cassette is excised when
-        the recombinase is supplied at a working dose. Range is (low, high).
-    leak: fraction of cells showing excision with NO recombinase supplied -- spontaneous
-        or carry-over activity. This is the dominant source of circuit leakiness and the
-        least well characterised number in the field.
-    """
-
     name: str
     site_name: str
     site_bp: int
     cds_bp: int
     excision_efficiency: tuple[float, float]
-    leak: tuple[float, float]
-    # Recombinases that this one cross-reacts with (non-orthogonal).
+    leak: tuple[float, float]  # excision fraction with no recombinase supplied
     cross_reacts: frozenset[str] = frozenset()
     family: str = "tyrosine"
     note: str = ""
 
     @property
     def eff_mid(self) -> float:
-        lo, hi = self.excision_efficiency
-        return (lo + hi) / 2
+        return sum(self.excision_efficiency) / 2
 
     @property
     def leak_mid(self) -> float:
-        lo, hi = self.leak
-        return (lo + hi) / 2
+        return sum(self.leak) / 2
 
 
 @dataclass(frozen=True)
 class Promoter:
-    """A promoter. `leak_readthrough` is basal transcription when gated OFF."""
-
     name: str
     bp: int
     strength: float  # arbitrary units, relative to EF1a full = 1.0
@@ -63,21 +36,15 @@ class Promoter:
 
 @dataclass(frozen=True)
 class Terminator:
-    """A polyadenylation / transcription termination signal.
-
-    readthrough: fraction of polymerases that get past it. This sets the noise floor of
-    any excision circuit that uses a terminator as its OFF state -- which is all of them.
-    """
-
     name: str
     bp: int
-    readthrough: tuple[float, float]
+    readthrough: tuple[float, float]  # fraction of polymerases getting past it
     note: str = ""
 
 
 @dataclass(frozen=True)
 class Payload:
-    """A cargo you want expressed. Sizes are coding sequence only, no promoter/polyA."""
+    """Cargo size, coding sequence only, no promoter/polyA."""
 
     name: str
     bp: int
@@ -86,20 +53,15 @@ class Payload:
 
 @dataclass(frozen=True)
 class Linker:
-    """A ribosome-skipping or cleavable linker for co-expressing payloads."""
+    """Ribosome-skipping or cleavable linker for co-expressing payloads."""
 
     name: str
     bp: int
     note: str = ""
 
 
-# --------------------------------------------------------------------------------------
-# Recombinases
-# --------------------------------------------------------------------------------------
-# Tyrosine recombinases (Cre, Flp, Dre, VCre) excise reversibly between identical sites.
-# Serine integrases (Bxb1, phiC31) recombine attB x attP irreversibly -- generally
-# preferred where you want the state to stick, which is most therapeutic applications.
-
+# Efficiency and leak values are literature estimates with wide ranges, for ranking
+# designs rather than predicting numbers. Override them with measured values.
 RECOMBINASES: dict[str, RecombinaseSystem] = {
     "Cre": RecombinaseSystem(
         name="Cre",
@@ -168,11 +130,9 @@ RECOMBINASES: dict[str, RecombinaseSystem] = {
     ),
 }
 
-# Orthogonality: recombinases within a family that share site chemistry are the risk.
-# These are the pairs with published cross-reactivity concerns.
+# Pairs with published cross-reactivity concerns: attB/attP scaffolds can cross-react
+# unless the sites come from a validated orthogonal set.
 _KNOWN_CROSSTALK: list[tuple[str, str]] = [
-    # Serine integrases using attB/attP scaffolds can cross-react if sites are not
-    # carefully chosen from validated orthogonal sets.
     ("Bxb1", "phiC31"),
 ]
 
@@ -182,14 +142,9 @@ def crosstalk_risk(a: str, b: str) -> bool:
     return (a, b) in _KNOWN_CROSSTALK or (b, a) in _KNOWN_CROSSTALK
 
 
-# Preference order when the compiler picks recombinases for you. Serine integrases first
-# where the state should be permanent; Cre/Flp are the best-characterised pair.
+# Preference order when the compiler picks recombinases.
 DEFAULT_RECOMBINASE_ORDER = ["Cre", "FlpO", "Dre", "VCre", "Bxb1", "phiC31"]
 
-
-# --------------------------------------------------------------------------------------
-# Promoters
-# --------------------------------------------------------------------------------------
 
 PROMOTERS: dict[str, Promoter] = {
     "minCMV": Promoter("minCMV", 100, 0.15, "Minimal CMV core. Tiny and weak -- the "
@@ -209,13 +164,9 @@ PROMOTERS: dict[str, Promoter] = {
 }
 
 DEFAULT_PROMOTER = "EFS"
-# Tried in this order when the compiler is downsizing to meet a budget.
+# Order tried when downsizing to meet a budget.
 PROMOTER_DOWNSIZE_ORDER = ["EF1a", "CMV", "hPGK", "UBC", "SV40", "EFS", "minCMV"]
 
-
-# --------------------------------------------------------------------------------------
-# Terminators
-# --------------------------------------------------------------------------------------
 
 TERMINATORS: dict[str, Terminator] = {
     "SPA": Terminator("SPA", 49, (0.02, 0.10), "Synthetic polyA. Smallest option; "
@@ -231,13 +182,9 @@ TERMINATORS: dict[str, Terminator] = {
 }
 
 DEFAULT_TERMINATOR = "bGHpA"
-# A gated-OFF blocker wants to be TIGHT; a trailing terminator can be smaller.
+# Terminator used as the gated-OFF blocker.
 DEFAULT_BLOCKER = "bGHpA"
 
-
-# --------------------------------------------------------------------------------------
-# Payloads (reference sizes, for convenience -- you can always pass a raw bp number)
-# --------------------------------------------------------------------------------------
 
 PAYLOADS: dict[str, Payload] = {
     "EGFP": Payload("EGFP", 720, "Reporter."),
@@ -271,29 +218,18 @@ LINKERS: dict[str, Linker] = {
 DEFAULT_LINKER = "P2A"
 
 
-# --------------------------------------------------------------------------------------
-# Structural overhead
-# --------------------------------------------------------------------------------------
-
-#: AAV inverted terminal repeat, one at each end of the genome.
+# AAV inverted terminal repeat, one at each end of the genome.
 AAV_ITR_BP = 130
 
-#: Kozak sequence + start context prepended to each coding cassette.
 KOZAK_BP = 10
 
-#: Spacer/scar left by assembly between adjacent elements. Small but it adds up over
-#: a design with a dozen junctions.
+# Spacer/scar left by assembly between adjacent elements.
 JUNCTION_BP = 6
 
 
 @dataclass
 class Parts:
-    """A resolved, possibly user-customised part library.
-
-    Use `override` to substitute your own measured numbers. Every parameter the
-    compiler relies on is reachable this way, which matters because the shipped
-    efficiencies and leak rates are estimates and yours will be better.
-    """
+    """A resolved, possibly user-customised part library."""
 
     recombinases: dict[str, RecombinaseSystem] = field(
         default_factory=lambda: dict(RECOMBINASES)
@@ -306,11 +242,6 @@ class Parts:
     linkers: dict[str, Linker] = field(default_factory=lambda: dict(LINKERS))
 
     def override_recombinase(self, name: str, **kwargs) -> None:
-        """Replace fields on a recombinase, e.g. with your own measured efficiency.
-
-        >>> p = Parts()
-        >>> p.override_recombinase("Cre", excision_efficiency=(0.97, 0.995))
-        """
         if name not in self.recombinases:
             raise KeyError(f"unknown recombinase {name!r}")
         self.recombinases[name] = replace(self.recombinases[name], **kwargs)
@@ -326,10 +257,8 @@ class Parts:
         self.terminators[name] = replace(self.terminators[name], **kwargs)
 
     def add_payload(self, name: str, bp: int, note: str = "") -> Payload:
-        """Register a custom payload size."""
-        p = Payload(name, int(bp), note)
-        self.payloads[name] = p
-        return p
+        self.payloads[name] = Payload(name, int(bp), note)
+        return self.payloads[name]
 
     def resolve_payload(self, spec: str | int | Payload) -> Payload:
         """Accept a library name, a raw bp count, or a Payload."""
@@ -340,8 +269,7 @@ class Parts:
         if isinstance(spec, str):
             if spec in self.payloads:
                 return self.payloads[spec]
-            # Allow "name:1500" and bare "1500".
-            if ":" in spec:
+            if ":" in spec:  # "name:1500"
                 nm, _, num = spec.partition(":")
                 return Payload(nm, int(num), "user-specified size")
             if spec.isdigit():
@@ -354,9 +282,8 @@ class Parts:
 
     def orthogonal_set(self, n: int, order: list[str] | None = None) -> list[str]:
         """Pick `n` mutually orthogonal recombinases, preferring well-characterised ones."""
-        order = order or DEFAULT_RECOMBINASE_ORDER
         chosen: list[str] = []
-        for name in order:
+        for name in order or DEFAULT_RECOMBINASE_ORDER:
             if name not in self.recombinases:
                 continue
             if any(crosstalk_risk(name, c) for c in chosen):

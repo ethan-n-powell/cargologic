@@ -1,4 +1,4 @@
-"""Top-level entry point: a Boolean spec and a delivery format in, a verdict out."""
+"""Compile a Boolean spec for a given delivery format into a circuit design."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from .synthesis import (
 
 @dataclass
 class CompileResult:
-    """Everything the compiler worked out, plus a rendered report."""
+    """The chosen design, its delivery verdicts and its leakage estimates."""
 
     spec: CircuitSpec
     design: Design
@@ -69,16 +69,14 @@ def _coerce_functions(
     if isinstance(logic, str):
         return [parse(logic, name="out", inputs=inputs)]
 
-    # Multi-output: parse each, then reconcile the input list across outputs.
     names = list(inputs) if inputs else None
     if names is None:
-        seen: list[str] = []
+        # All outputs must share one input list.
+        names = []
         for expr in logic.values():
-            f = parse(expr, name="tmp")
-            for v in f.inputs:
-                if v not in seen:
-                    seen.append(v)
-        names = seen
+            for v in parse(expr, name="tmp").inputs:
+                if v not in names:
+                    names.append(v)
     return [parse(expr, name=nm, inputs=names) for nm, expr in logic.items()]
 
 
@@ -88,9 +86,7 @@ def _coerce_payloads(
     if isinstance(payload, dict):
         missing = {f.name for f in functions} - set(payload)
         if missing:
-            raise SynthesisError(
-                f"no payload given for output(s) {sorted(missing)}"
-            )
+            raise SynthesisError(f"no payload given for output(s) {sorted(missing)}")
         return {k: parts.resolve_payload(v) for k, v in payload.items()}
     resolved = parts.resolve_payload(payload)
     return {f.name: resolved for f in functions}
@@ -112,36 +108,7 @@ def compile_circuit(
     terminator: str | None = None,
     n_samples: int = 2000,
 ) -> CompileResult:
-    """Compile a Boolean specification into a recombinase circuit design.
-
-    Parameters
-    ----------
-    logic
-        A Boolean expression (``"A and not B"``), a named gate (``"AND"``, ``"XOR"``,
-        ``"MAJORITY3"``), or a dict mapping output names to expressions for a
-        multi-output circuit. With ``as_table=True`` these are parsed as truth tables
-        instead (``"00:0,01:1,10:1,11:0"``, ``"0110"`` or a minterm list ``"1,2"``).
-    payload
-        A library name (``"CAR_2g"``), a raw bp count, or a dict per output.
-    vector
-        Target delivery format. See ``cargologic.delivery.vector_catalogue()``.
-    include_recombinases
-        Count the recombinase coding sequences against the packaging budget. Usually
-        false: published devices supply them separately.
-    optimise
-        Search part choices for a design that fits. Set false to use the defaults as-is.
-
-    Returns
-    -------
-    CompileResult
-        Call ``.report()`` for the human-readable verdict.
-
-    Examples
-    --------
-    >>> r = compile_circuit("A and not B", payload="CAR_2g", vector="aav_single")
-    >>> r.feasible
-    True
-    """
+    """Compile a Boolean specification into a recombinase circuit design."""
     parts = parts or Parts()
     cat = vector_catalogue()
     if vector not in cat:
@@ -149,30 +116,20 @@ def compile_circuit(
     vec = cat[vector]
 
     functions = _coerce_functions(logic, inputs, as_table)
-    payloads = _coerce_payloads(payload, functions, parts)
     spec = CircuitSpec(
         inputs=functions[0].inputs,
         functions=functions,
-        payloads=payloads,
+        payloads=_coerce_payloads(payload, functions, parts),
         recombinase_names=recombinases,
     )
     spec.validate()
 
     covers = {f.name: f.minimise() for f in functions}
 
-    explicit = PartChoice()
-    if promoter:
-        explicit.promoter = promoter
-    if blocker:
-        explicit.blocker = blocker
-    if terminator:
-        explicit.terminator = terminator
-    user_fixed = any([promoter, blocker, terminator])
-
     candidates: list[Candidate] = []
     searched = False
 
-    if optimise and not user_fixed:
+    if optimise and not (promoter or blocker or terminator):
         candidates = search(
             spec,
             parts,
@@ -182,19 +139,17 @@ def compile_circuit(
             n_samples=max(200, n_samples // 5),
         )
         searched = True
-        pick = best_fitting(candidates, min_dynamic_range)
-        if pick is None:
-            # Nothing both fits and clears the dynamic-range floor. Take the best
-            # dynamic range available, breaking ties-within-tolerance by size.
-            pick = best_effort(candidates)
-        choice = pick.choice
-        design = pick.design
+        pick = best_fitting(candidates, min_dynamic_range) or best_effort(candidates)
+        choice, design = pick.choice, pick.design
     else:
-        choice = explicit
+        choice = PartChoice()
+        if promoter:
+            choice.promoter = promoter
+        if blocker:
+            choice.blocker = blocker
+        if terminator:
+            choice.terminator = terminator
         design = build_design(spec, parts, choice, include_recombinases)
-
-    target_verdict = vec.evaluate(design.total_bp)
-    all_verdicts = evaluate_all(design.total_bp)
 
     leak = {
         f.name: leakage.predict(design, f.name, n_samples=n_samples, seed=7)
@@ -207,8 +162,8 @@ def compile_circuit(
         covers=covers,
         choice=choice,
         target_vector=vector,
-        target_verdict=target_verdict,
-        all_verdicts=all_verdicts,
+        target_verdict=vec.evaluate(design.total_bp),
+        all_verdicts=evaluate_all(design.total_bp),
         leakage=leak,
         candidates=candidates,
         parts=parts,
@@ -217,5 +172,4 @@ def compile_circuit(
 
 
 def minimum_aav_count(result: CompileResult) -> int:
-    """How many AAVs this design would need."""
     return minimum_vectors_needed(result.circuit_bp)

@@ -1,17 +1,4 @@
-"""cargologic -- payload-constrained logic compilation for mammalian recombinase circuits.
-
-You give it a truth table and a delivery format. It gives you a DNA architecture, an
-exact size, a packaging verdict, and a modelled dynamic range with uncertainty.
-
-    >>> import cargologic as cl
-    >>> r = cl.compile_circuit("A and not B", payload="CAR_2g", vector="aav_single")
-    >>> r.feasible
-    True
-
-The size verdict is arithmetic over physical packaging limits and is trustworthy. The
-expression predictions are a model and are not. The report keeps the two apart on
-purpose.
-"""
+"""Payload-constrained logic compilation for mammalian recombinase circuits."""
 
 from .compiler import CompileResult, compile_circuit, minimum_aav_count
 from .delivery import (

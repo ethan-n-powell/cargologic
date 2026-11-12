@@ -1,22 +1,7 @@
-"""Boolean specification and two-level logic minimisation.
-
-This is where the compiler earns its keep. In a single-layer recombinase circuit, each
-product term in a minimal sum-of-products cover costs you one physical cassette on the
-DNA. So the number of product terms, not the "complexity" of the function, is what
-decides whether your circuit fits in an AAV.
-
-That makes Quine-McCluskey a packaging optimisation, which is a slightly odd thing to
-say out loud but is exactly what is going on: a function that minimises to two terms
-instead of three can be the difference between one vector and two.
-
-Negative literals are nearly free (they flank a cassette you already have); positive
-literals each cost a blocker. So among covers with the same number of terms we prefer
-the one with fewer positive literals. See `Cover.cost_key`.
-"""
+"""Boolean specification and two-level logic minimisation."""
 
 from __future__ import annotations
 
-import itertools
 import re
 from dataclasses import dataclass
 
@@ -25,18 +10,10 @@ class LogicError(ValueError):
     """Raised for malformed Boolean specifications."""
 
 
-# --------------------------------------------------------------------------------------
-# Implicants
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, order=True)
 class Implicant:
-    """A product term (cube) over `n` variables.
-
-    `mask` has a 1 bit for each variable the term constrains; `bits` gives the required
-    value of those variables. Variable i is bit (n - 1 - i), so variable 0 is the most
-    significant bit -- this makes the string form read left-to-right in input order.
+    """A product term over n variables. mask marks the constrained variables and bits
+    their values; variable i is bit (n - 1 - i), so variable 0 is most significant.
     """
 
     bits: int
@@ -61,19 +38,15 @@ class Implicant:
         return 1 if (self.bits & b) else 0
 
     def positive_literals(self) -> list[int]:
-        """Variable indices that must be TRUE. Each costs a blocker cassette."""
         return [i for i in range(self.n) if self.literal(i) == 1]
 
     def negative_literals(self) -> list[int]:
-        """Variable indices that must be FALSE. These flank the payload, so they are cheap."""
         return [i for i in range(self.n) if self.literal(i) == 0]
 
     def minterms(self) -> list[int]:
-        """Every minterm this cube covers."""
-        free = [self._bit_of(i) for i in range(self.n) if self.literal(i) is None]
         out = [self.bits]
-        for f in free:
-            out = out + [v | f for v in out]
+        for b in (self._bit_of(i) for i in range(self.n) if self.literal(i) is None):
+            out = out + [v | b for v in out]
         return sorted(out)
 
     def is_tautology(self) -> bool:
@@ -83,19 +56,15 @@ class Implicant:
         parts = []
         for i, nm in enumerate(names):
             lit = self.literal(i)
-            if lit == 1:
-                parts.append(nm)
-            elif lit == 0:
-                parts.append(f"!{nm}")
+            if lit is not None:
+                parts.append(nm if lit else f"!{nm}")
         return " & ".join(parts) if parts else "1"
 
     def pattern(self, names: list[str] | None = None) -> str:
         """Compact '1-0' style pattern."""
-        chars = []
-        for i in range(self.n):
-            lit = self.literal(i)
-            chars.append("-" if lit is None else str(lit))
-        return "".join(chars)
+        return "".join(
+            "-" if (lit := self.literal(i)) is None else str(lit) for i in range(self.n)
+        )
 
 
 def _combine(a: Implicant, b: Implicant) -> Implicant | None:
@@ -103,7 +72,7 @@ def _combine(a: Implicant, b: Implicant) -> Implicant | None:
     if a.mask != b.mask:
         return None
     diff = a.bits ^ b.bits
-    if diff == 0 or (diff & (diff - 1)) != 0:  # must be exactly one bit
+    if diff == 0 or (diff & (diff - 1)) != 0:
         return None
     new_mask = a.mask & ~diff
     return Implicant(a.bits & new_mask, new_mask, a.n)
@@ -113,7 +82,7 @@ def prime_implicants(
     n: int, ones: set[int], dont_cares: set[int] = frozenset()
 ) -> list[Implicant]:
     """Quine-McCluskey prime implicant generation."""
-    terms = sorted(set(ones) | set(dont_cares))
+    terms = set(ones) | set(dont_cares)
     if not terms:
         return []
     full_mask = (1 << n) - 1
@@ -123,23 +92,20 @@ def prime_implicants(
     while current:
         used: set[Implicant] = set()
         nxt: set[Implicant] = set()
-        pool = sorted(current)
-        # Group by number of set bits so we only compare adjacent groups.
+        # Grouped by set-bit count, so only adjacent groups need comparing.
         by_weight: dict[int, list[Implicant]] = {}
-        for imp in pool:
+        for imp in sorted(current):
             by_weight.setdefault(bin(imp.bits & imp.mask).count("1"), []).append(imp)
         for w in sorted(by_weight):
-            for a in by_weight.get(w, []):
+            for a in by_weight[w]:
                 for b in by_weight.get(w + 1, []):
                     merged = _combine(a, b)
                     if merged is not None:
                         nxt.add(merged)
-                        used.add(a)
-                        used.add(b)
+                        used.update((a, b))
         primes |= current - used
         current = nxt
 
-    # A prime implicant that covers only don't-cares is useless.
     return sorted(p for p in primes if any(m in ones for m in p.minterms()))
 
 
@@ -163,21 +129,14 @@ class Cover:
 
     @property
     def cost_key(self) -> tuple[int, int, int]:
-        """Sort key. Fewer cassettes first, then fewer blockers, then fewer sites.
-
-        Term count dominates because a term is a whole cassette (promoter + payload +
-        polyA, often >1 kb). A positive literal is just a blocker (~240 bp). A negative
-        literal is a pair of recombinase sites (~70 bp).
-        """
+        """Sort key: fewer cassettes, then fewer blockers, then fewer sites."""
         return (self.n_terms, self.n_positive_literals, self.n_literals)
 
     def evaluate(self, minterm: int) -> bool:
         return any(t.covers(minterm) for t in self.terms)
 
     def to_str(self, names: list[str]) -> str:
-        if not self.terms:
-            return "0"
-        return "  |  ".join(t.to_str(names) for t in self.terms)
+        return "  |  ".join(t.to_str(names) for t in self.terms) if self.terms else "0"
 
 
 def minimise(
@@ -186,12 +145,7 @@ def minimise(
     dont_cares: set[int] = frozenset(),
     exact_limit: int = 10,
 ) -> Cover:
-    """Find a minimal sum-of-products cover.
-
-    Exact (Petrick's method with absorption) for small problems, greedy above
-    `exact_limit` prime implicants-per-minterm blowup. For the 2-4 input circuits that
-    single-layer recombinase logic can actually realise, this is always exact.
-    """
+    """Minimal sum-of-products cover; greedy only above exact_limit."""
     ones = set(ones)
     if not ones:
         return Cover([])
@@ -199,65 +153,55 @@ def minimise(
     if not primes:
         return Cover([])
 
-    # Tautology shortcut: if any prime covers everything, one ungated cassette does it.
     for p in primes:
         if p.is_tautology():
             return Cover([p])
 
-    # Which primes cover each required minterm?
     coverage: dict[int, list[int]] = {}
     for m in sorted(ones):
         hit = [i for i, p in enumerate(primes) if p.covers(m)]
-        if not hit:  # pragma: no cover - cannot happen with correct primes
+        if not hit:  # pragma: no cover
             raise LogicError(f"minterm {m} uncovered by any prime implicant")
         coverage[m] = hit
 
-    # Essential primes: the only one covering some minterm.
+    # Essential primes: the sole cover of some minterm.
     essential = {hits[0] for hits in coverage.values() if len(hits) == 1}
-    covered: set[int] = set()
-    for i in essential:
-        covered |= set(primes[i].minterms())
-    remaining = {m for m in ones if m not in covered}
+    covered = {m for i in essential for m in primes[i].minterms()}
+    remaining = ones - covered
 
     if not remaining:
         return Cover(sorted((primes[i] for i in essential), key=lambda p: p.pattern()))
 
     sub_coverage = {m: coverage[m] for m in sorted(remaining)}
-
     if max(len(v) for v in sub_coverage.values()) <= exact_limit:
         choices = _petrick(sub_coverage)
-    else:  # pragma: no cover - only for large pathological functions
+    else:  # pragma: no cover
         choices = [_greedy(sub_coverage, primes)]
 
-    best: Cover | None = None
-    for extra in choices:
-        cand = Cover(
+    candidates = [
+        Cover(
             sorted(
                 (primes[i] for i in sorted(essential | extra)),
                 key=lambda p: p.pattern(),
             )
         )
-        if best is None or cand.cost_key < best.cost_key:
-            best = cand
-    assert best is not None
-    return best
+        for extra in choices
+    ]
+    return min(candidates, key=lambda c: c.cost_key)
 
 
 def _petrick(coverage: dict[int, list[int]]) -> list[set[int]]:
-    """Expand the product-of-sums cover condition, absorbing supersets as we go."""
+    """Expand the product-of-sums cover condition, absorbing supersets as it goes."""
     solutions: list[frozenset[int]] = [frozenset()]
     for hits in coverage.values():
         grown: list[frozenset[int]] = []
         for sol in solutions:
             if sol & set(hits):
-                grown.append(sol)  # already satisfied
-                continue
-            for h in hits:
-                grown.append(sol | {h})
-        # Absorption: drop any solution that is a superset of another.
-        grown = sorted(set(grown), key=len)
+                grown.append(sol)
+            else:
+                grown += [sol | {h} for h in hits]
         minimal: list[frozenset[int]] = []
-        for s in grown:
+        for s in sorted(set(grown), key=len):
             if not any(m <= s for m in minimal):
                 minimal.append(s)
         solutions = minimal
@@ -284,10 +228,6 @@ def _greedy(
     return chosen
 
 
-# --------------------------------------------------------------------------------------
-# Boolean expression parsing
-# --------------------------------------------------------------------------------------
-
 _TOKEN_RE = re.compile(
     r"\s*(?:(?P<lparen>\()|(?P<rparen>\))|(?P<op>&&|\|\||\^|&|\||~|!)"
     r"|(?P<word>[A-Za-z_][A-Za-z_0-9]*)|(?P<const>[01])|(?P<bad>\S))"
@@ -308,28 +248,20 @@ def _tokenise(expr: str) -> list[tuple[str, str]]:
             toks.append(("lparen", "("))
         elif m.group("rparen"):
             toks.append(("rparen", ")"))
-        elif m.group("op"):
-            op = m.group("op")
-            op = {"&&": "&", "||": "|", "~": "!"}.get(op, op)
-            toks.append(("op", op))
-        elif m.group("word"):
-            w = m.group("word")
+        elif op := m.group("op"):
+            toks.append(("op", {"&&": "&", "||": "|", "~": "!"}.get(op, op)))
+        elif w := m.group("word"):
             lw = w.lower()
-            if lw in _WORD_OPS:
-                toks.append(("op", _WORD_OPS[lw]))
-            else:
-                toks.append(("var", w))
-        elif m.group("const"):
-            toks.append(("const", m.group("const")))
-        elif m.group("bad"):
-            raise LogicError(f"unexpected character {m.group('bad')!r} in {expr!r}")
+            toks.append(("op", _WORD_OPS[lw]) if lw in _WORD_OPS else ("var", w))
+        elif const := m.group("const"):
+            toks.append(("const", const))
+        elif bad := m.group("bad"):
+            raise LogicError(f"unexpected character {bad!r} in {expr!r}")
     return toks
 
 
 class _Parser:
-    """Recursive descent over:  or := xor ('|' xor)* ; xor := and ('^' and)* ;
-    and := unary ('&' unary)* ; unary := '!' unary | atom ; atom := var | const | (or)
-    """
+    """Recursive descent; precedence: | then ^ then & then !."""
 
     def __init__(self, toks: list[tuple[str, str]]):
         self.toks = toks
@@ -354,14 +286,14 @@ class _Parser:
 
     def parse_or(self):
         node = self.parse_xor()
-        while (t := self.peek()) and t == ("op", "|"):
+        while self.peek() == ("op", "|"):
             self.i += 1
             node = ("or", node, self.parse_xor())
         return node
 
     def parse_xor(self):
         node = self.parse_and()
-        while (t := self.peek()) and t == ("op", "^"):
+        while self.peek() == ("op", "^"):
             self.i += 1
             node = ("xor", node, self.parse_and())
         return node
@@ -370,18 +302,17 @@ class _Parser:
         node = self.parse_unary()
         while True:
             t = self.peek()
-            if t and t == ("op", "&"):
+            if t == ("op", "&"):
                 self.i += 1
                 node = ("and", node, self.parse_unary())
-            # Implicit AND: "A B" means "A & B".
             elif t and t[0] in {"var", "const", "lparen"}:
+                # Implicit AND: "A B" means "A & B".
                 node = ("and", node, self.parse_unary())
             else:
                 return node
 
     def parse_unary(self):
-        t = self.peek()
-        if t and t == ("op", "!"):
+        if self.peek() == ("op", "!"):
             self.i += 1
             return ("not", self.parse_unary())
         return self.parse_atom()
@@ -439,7 +370,6 @@ NAMED_GATES: dict[str, str] = {
     "IMPLY": "!A | B",
     "ALWAYS_ON": "1",
     "ALWAYS_OFF": "0",
-    # Three-input gates people actually ask for in cell therapy.
     "AND3": "A & B & C",
     "OR3": "A | B | C",
     "AND_NOT": "A & B & !C",
@@ -465,11 +395,7 @@ class BooleanFunction:
         return minterm in self.ones
 
     def truth_rows(self) -> list[tuple[str, bool]]:
-        rows = []
-        for m in range(1 << self.n):
-            bits = format(m, f"0{self.n}b")
-            rows.append((bits, m in self.ones))
-        return rows
+        return [(format(m, f"0{self.n}b"), m in self.ones) for m in range(1 << self.n)]
 
     def minimise(self) -> Cover:
         return minimise(self.n, self.ones, self.dont_cares)
@@ -478,15 +404,7 @@ class BooleanFunction:
 def parse_expression(
     expr: str, name: str = "out", inputs: list[str] | None = None
 ) -> BooleanFunction:
-    """Parse a Boolean expression into a function.
-
-    Accepts `&`/`and`, `|`/`or`, `!`/`~`/`not`, `^`/`xor`, parentheses, implicit AND,
-    and the gate names in `NAMED_GATES`.
-
-    >>> f = parse_expression("A and not B")
-    >>> sorted(f.ones)
-    [2]
-    """
+    """Parse a Boolean expression, or a NAMED_GATES key, into a function."""
     key = expr.strip().upper().replace(" ", "_")
     if key in NAMED_GATES:
         expr = NAMED_GATES[key]
@@ -502,31 +420,22 @@ def parse_expression(
         if v not in names:
             raise LogicError(f"variable {v!r} not in declared inputs {names}")
     if not names:
-        # Constant function; needs at least one nominal input to have a truth table.
+        # A constant function still needs one nominal input for a truth table.
         names = ["A"]
 
     n = len(names)
-    ones = set()
-    for m in range(1 << n):
-        env = {nm: bool((m >> (n - 1 - i)) & 1) for i, nm in enumerate(names)}
-        if _eval(tree, env):
-            ones.add(m)
+    ones = {
+        m
+        for m in range(1 << n)
+        if _eval(tree, {nm: bool((m >> (n - 1 - i)) & 1) for i, nm in enumerate(names)})
+    }
     return BooleanFunction(name=name, inputs=names, ones=ones, source=expr)
 
 
 def parse_table(
     spec: str, name: str = "out", inputs: list[str] | None = None
 ) -> BooleanFunction:
-    """Parse an explicit truth table.
-
-    Formats:
-      "00:0,01:1,10:1,11:0"   explicit rows (missing rows default to 0)
-      "0110"                  output column, MSB-first over all 2^n rows
-      "m1,m2"                 minterm list, e.g. "1,2" for the XOR ON-set
-
-    A row value of 'x' or '-' marks a don't-care, which the minimiser will exploit to
-    shrink your design.
-    """
+    """Parse a truth table: rows "00:0,01:1", a column "0110", or minterms "1,2"."""
     spec = spec.strip()
 
     if ":" in spec:
@@ -568,16 +477,13 @@ def parse_table(
         names = inputs or _default_names(n)
         return BooleanFunction(name, list(names), ones, frozenset(dcs), spec)
 
-    # Minterm list.
     try:
         ms = {int(p) for p in re.split(r"[,\s]+", spec) if p}
     except ValueError as exc:
         raise LogicError(f"cannot parse truth table {spec!r}") from exc
     if not ms:
         raise LogicError(f"empty minterm list {spec!r}")
-    n = max(1, max(ms).bit_length())
-    if inputs:
-        n = len(inputs)
+    n = len(inputs) if inputs else max(1, max(ms).bit_length())
     names = inputs or _default_names(n)
     return BooleanFunction(name, list(names), ms, frozenset(), spec)
 
@@ -587,16 +493,15 @@ def _default_names(n: int) -> list[str]:
 
 
 def all_functions(n: int) -> list[BooleanFunction]:
-    """Every Boolean function of n inputs. 16 of them for n=2.
-
-    Useful as a completeness check: BLADE demonstrated all 16 two-input functions
-    experimentally, so a compiler that cannot emit a design for each of them is wrong.
-    """
+    """Every Boolean function of n inputs; 16 of them for n = 2."""
     names = _default_names(n)
-    out = []
-    for mask in range(1 << (1 << n)):
-        ones = {m for m in range(1 << n) if (mask >> m) & 1}
-        out.append(
-            BooleanFunction(f"f{mask}", list(names), ones, frozenset(), f"mask={mask}")
+    return [
+        BooleanFunction(
+            f"f{mask}",
+            list(names),
+            {m for m in range(1 << n) if (mask >> m) & 1},
+            frozenset(),
+            f"mask={mask}",
         )
-    return out
+        for mask in range(1 << (1 << n))
+    ]

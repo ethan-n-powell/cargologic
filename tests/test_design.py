@@ -14,11 +14,7 @@ from cargologic.parts import AAV_ITR_BP, Parts
 from cargologic.synthesis import CircuitSpec, PartChoice, SynthesisError, build_design
 
 
-# ------------------------------------------------------------------------------ sizes
-
-
 def test_size_is_sum_of_elements():
-    """Total length must equal the sum of its parts, with no double counting."""
     r = cl.compile_circuit("A & !B", payload=1000, optimise=False)
     assert r.design.total_bp == sum(e.bp for e in r.design.elements)
 
@@ -40,7 +36,6 @@ def test_payload_size_shows_up_one_for_one():
 
 
 def test_extra_product_term_costs_more_than_a_part_swap():
-    """The core claim of the tool: term count dominates part choice."""
     one_term = cl.compile_circuit("A & B", payload=1500, optimise=False)
     two_term = cl.compile_circuit("A ^ B", payload=1500, optimise=False)
     term_cost = two_term.design.total_bp - one_term.design.total_bp
@@ -50,9 +45,6 @@ def test_extra_product_term_costs_more_than_a_part_swap():
     promoter_span = biggest.design.total_bp - smallest.design.total_bp
 
     assert term_cost > promoter_span
-
-
-# --------------------------------------------------------------------------- sharing
 
 
 def test_or_can_share_payload_but_xor_cannot():
@@ -70,9 +62,7 @@ def test_sharing_makes_or_smaller_than_xor_at_equal_term_count():
 
 
 def test_identical_logic_on_two_outputs_shares_one_cassette():
-    r = cl.compile_circuit(
-        {"x": "A & !B", "y": "A & !B"}, payload={"x": 1000, "y": 1000}
-    )
+    r = cl.compile_circuit({"x": "A & !B", "y": "A & !B"}, payload={"x": 1000, "y": 1000})
     assert r.design.n_terms == 1
     assert any("P2A" in n for n in r.design.notes)
 
@@ -86,17 +76,12 @@ def test_forcing_tandem_on_unshareable_cover_raises():
         build_design(spec, Parts(), PartChoice(), force_strategy="tandem_promoters")
 
 
-# -------------------------------------------------------------------------- delivery
-
-
 def test_aav_single_budget_is_capacity_minus_itrs():
-    v = vector_catalogue()["aav_single"]
-    assert v.budget() == 4700 - 2 * AAV_ITR_BP
+    assert vector_catalogue()["aav_single"].budget() == 4700 - 2 * AAV_ITR_BP
 
 
 def test_oversized_aav_is_flagged_over_not_merely_tight():
-    v = vector_catalogue()["aav_single"]
-    verdict = v.evaluate(6000)
+    verdict = vector_catalogue()["aav_single"].evaluate(6000)
     assert not verdict.fits
     assert verdict.severity == "over"
     assert verdict.headroom_bp < 0
@@ -124,8 +109,7 @@ def test_lentiviral_titre_is_flat_below_reference_then_falls():
 
 
 def test_titre_is_monotonically_decreasing():
-    sizes = range(4000, 14000, 500)
-    titres = [lentiviral_relative_titre(s) for s in sizes]
+    titres = [lentiviral_relative_titre(s) for s in range(4000, 14000, 500)]
     assert all(a >= b for a, b in zip(titres, titres[1:]))
 
 
@@ -137,13 +121,9 @@ def test_minimum_vector_count(bp, expected):
 
 
 def test_single_vector_count_agrees_with_fit_verdict():
-    """A design that fits one AAV must not be reported as needing two."""
     v = vector_catalogue()["aav_single"]
     for bp in (1000, 3000, 4400, 4440):
         assert (minimum_vectors_needed(bp) == 1) == v.evaluate(bp).fits
-
-
-# --------------------------------------------------------------------------- search
 
 
 def test_search_does_not_waste_budget_for_unresolvable_gains():
@@ -168,16 +148,11 @@ def test_explicit_parts_are_respected():
     assert r.choice.terminator == "SPA"
 
 
-# -------------------------------------------------------------------------- behaviour
-
-
 def test_not_gate_is_excision_limited_not_terminator_limited():
-    """The substantive modelling claim, and the one that gives actionable advice."""
-    r = cl.compile_circuit("A & !B", payload=1500, n_samples=800)
-    rep = r.leakage["out"]
+    rep = cl.compile_circuit("A & !B", payload=1500, n_samples=800).leakage["out"]
     assert rep.limiting is not None
     assert rep.limiting.name == "incomplete excision"
-    # And the worst OFF state is the one where the NOT input is high.
+    # "11" is the OFF state with the NOT input high.
     assert rep.worst_off_state == "11"
 
 
@@ -206,8 +181,7 @@ def test_improving_excision_helps_a_not_gate_but_better_terminators_do_not():
 
 def test_pure_and_gate_has_no_off_state_requiring_excision():
     """AND uses only blockers, so its OFF states are terminator-limited."""
-    r = cl.compile_circuit("A & B", payload=1500, n_samples=800)
-    rep = r.leakage["out"]
+    rep = cl.compile_circuit("A & B", payload=1500, n_samples=800).leakage["out"]
     assert rep.limiting is not None
     assert rep.limiting.name == "terminator read-through"
 
@@ -235,11 +209,7 @@ def test_predictions_are_deterministic_for_a_fixed_seed():
     assert a.leakage["out"].dynamic_range_median == b.leakage["out"].dynamic_range_median
 
 
-# ------------------------------------------------------------------------ end to end
-
-
 def test_all_sixteen_two_input_functions_compile():
-    """BLADE built all 16 experimentally; a compiler that cannot emit them is wrong."""
     for f in all_functions(2):
         column = "".join("1" if m in f.ones else "0" for m in range(4))
         r = cl.compile_circuit(
@@ -284,8 +254,7 @@ def test_crosstalking_recombinases_are_not_auto_selected_together():
 
 
 def test_report_renders_and_names_the_failing_state():
-    r = cl.compile_circuit("A & !B", payload="CAR_2g", n_samples=400)
-    text = r.report()
+    text = cl.compile_circuit("A & !B", payload="CAR_2g", n_samples=400).report()
     assert "FITS" in text
     assert "LOGIC MINIMISATION" in text
     assert "what is limiting" in text
@@ -327,19 +296,13 @@ def test_parts_override_round_trips():
 
 
 def test_not_gates_cannot_be_rescued_by_better_terminators_but_and_gates_can():
-    """The design rule the Pareto front exposes, locked in as a test.
-
-    An AND gate's OFF state is held down by a terminator, so a tighter blocker buys
-    real dynamic range. A gate containing a NOT puts its OFF state behind a physical
-    excision event, so no terminator reaches that floor and the front collapses.
-    """
+    """An AND OFF state is held by a terminator, a NOT OFF state by an excision event."""
     and_gate = cl.compile_circuit("A & B", payload="CAR_2g", n_samples=600)
     not_gate = cl.compile_circuit("A & B & !C", payload="CAR_2g", n_samples=600)
 
     assert and_gate.leakage["out"].limiting.name == "terminator read-through"
     assert not_gate.leakage["out"].limiting.name == "incomplete excision"
 
-    # The AND gate has a genuine size/performance trade-off to offer.
     assert len(and_gate.pareto) >= 3
     best, worst = max(and_gate.pareto, key=lambda c: c.dynamic_range), min(
         and_gate.pareto, key=lambda c: c.dynamic_range
@@ -347,5 +310,4 @@ def test_not_gates_cannot_be_rescued_by_better_terminators_but_and_gates_can():
     assert best.dynamic_range > 2 * worst.dynamic_range
     assert best.circuit_bp > worst.circuit_bp
 
-    # The NOT gate has none: spending base pairs cannot help it.
     assert len(not_gate.pareto) == 1

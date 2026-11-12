@@ -1,27 +1,7 @@
-"""Leakiness, dynamic range, and -- most usefully -- what is actually limiting them.
+"""Leakiness, dynamic range, and which of three mechanisms is limiting them.
 
-READ THIS BEFORE QUOTING ANY NUMBER FROM THIS MODULE.
-
-The size verdict in `delivery.py` is arithmetic. This module is a model, and models of
-mammalian circuit behaviour have a poor recent track record: a 2026 mammalian circuit CAD
-paper found its ODE predictions "did not align well" with its own measurements, and a
-2026 ultra-high-throughput study found a plain neural network beat a biophysically
-consistent mechanistic model by a wide margin on held-out designs (r^2 ~0.88 vs ~0.37).
-
-So this module is deliberately modest in what it claims and deliberately specific in
-what it diagnoses. It propagates three parameters we have order-of-magnitude estimates
-for -- excision efficiency, spontaneous excision leak, and terminator read-through --
-through the circuit's state graph, reports a distribution rather than a point, and then
-runs a sensitivity analysis to say WHICH of the three is limiting you.
-
-That last part is the bit worth having. "Your AND-NOT gate is excision-limited, so a
-tighter polyA will not help and a better recombinase will" is actionable and robust even
-when the absolute numbers are off, because it depends on the ordering of effects rather
-than their magnitudes.
-
-Not modelled: transcriptional squelching, resource competition between transgenes,
-retroactivity, position effects, silencing, cell-type differences. Each has broken a
-published mammalian design.
+The parameters are order-of-magnitude estimates, so this ranks designs rather than
+predicting levels.
 """
 
 from __future__ import annotations
@@ -35,9 +15,8 @@ from .architecture import Cassette, Design
 
 @dataclass
 class Params:
-    """One draw of the model's parameters."""
+    """One parameter draw. fired[i] is the probability input i's recombinase has acted."""
 
-    #: Probability each input's recombinase has acted, given that input's state.
     fired: dict[int, float]
     blocker_readthrough: float
     terminator_readthrough: float
@@ -92,11 +71,7 @@ class LeakageReport:
 
 
 def _sample(rng: random.Random, lo: float, hi: float) -> float:
-    """Draw from a parameter's reported range.
-
-    Triangular with the mode at the midpoint: we have a literature range and no basis
-    for a sharper shape, and a uniform draw would overweight the extremes.
-    """
+    """Triangular draw over a reported range, mode at the midpoint."""
     if hi <= lo:
         return lo
     return rng.triangular(lo, hi, (lo + hi) / 2)
@@ -107,12 +82,12 @@ def _draw_params(rng: random.Random, design: Design, minterm: int, cas: Cassette
     fired: dict[int, float] = {}
     for i in range(n):
         rec = design.recombinase_for(i)
-        on = bool((minterm >> (n - 1 - i)) & 1)
+        on = (minterm >> (n - 1 - i)) & 1
         fired[i] = _sample(rng, *(rec.excision_efficiency if on else rec.leak))
     return Params(
-        fired=fired,
-        blocker_readthrough=_sample(rng, *cas.blocker.readthrough),
-        terminator_readthrough=_sample(rng, *cas.terminator.readthrough),
+        fired,
+        _sample(rng, *cas.blocker.readthrough),
+        _sample(rng, *cas.terminator.readthrough),
     )
 
 
@@ -121,22 +96,16 @@ def _midpoint_params(design: Design, minterm: int, cas: Cassette) -> Params:
     fired: dict[int, float] = {}
     for i in range(n):
         rec = design.recombinase_for(i)
-        on = bool((minterm >> (n - 1 - i)) & 1)
-        fired[i] = rec.eff_mid if on else rec.leak_mid
+        fired[i] = rec.eff_mid if (minterm >> (n - 1 - i)) & 1 else rec.leak_mid
     return Params(
-        fired=fired,
-        blocker_readthrough=sum(cas.blocker.readthrough) / 2,
-        terminator_readthrough=sum(cas.terminator.readthrough) / 2,
+        fired,
+        sum(cas.blocker.readthrough) / 2,
+        sum(cas.terminator.readthrough) / 2,
     )
 
 
 def _cassette_reach(cas: Cassette, p: Params) -> float:
-    """Probability transcription from this promoter reaches the payload position.
-
-    Each positive literal is a blocker that must be excised. An unexcised blocker still
-    passes `blocker_readthrough` of polymerases, which is the floor you cannot design
-    away without a tighter terminator.
-    """
+    """Probability transcription from this promoter reaches the payload position."""
     out = 1.0
     for i in cas.positive_literals:
         f = p.fired[i]
@@ -145,12 +114,7 @@ def _cassette_reach(cas: Cassette, p: Params) -> float:
 
 
 def _payload_present(neg_literals: list[int], p: Params) -> float:
-    """Probability the payload has NOT been excised by a negative-literal recombinase.
-
-    This is where NOT gates live or die. If excision is only 85% efficient, 15% of cells
-    keep the payload and the OFF state is 15% ON -- regardless of how good your
-    terminators are.
-    """
+    """Probability the payload has not been excised by a negative-literal recombinase."""
     out = 1.0
     for j in neg_literals:
         out *= 1.0 - p.fired[j]
@@ -159,99 +123,73 @@ def _payload_present(neg_literals: list[int], p: Params) -> float:
 
 def _level(design: Design, relevant: list[Cassette], minterm: int, p: Params) -> float:
     """Predicted output level for one state under one parameter draw."""
-    shared = design.strategy == "tandem_promoters"
-
-    if shared:
-        neg = relevant[0].negative_literals
-        present = _payload_present(neg, p)
+    if design.strategy == "tandem_promoters":
         miss = 1.0
-        strength = 0.0
+        floor_strength = 0.0
         for c in relevant:
             miss *= 1.0 - _cassette_reach(c, p)
-            strength = max(strength, c.promoter.strength)
-        level = present * (1.0 - miss) * strength
-        floor_strength = strength
+            floor_strength = max(floor_strength, c.promoter.strength)
+        present = _payload_present(relevant[0].negative_literals, p)
+        level = present * (1.0 - miss) * floor_strength
     else:
         level = 0.0
         floor_strength = 0.0
         for c in relevant:
             reach = _cassette_reach(c, p)
-            present = _payload_present(c.negative_literals, p)
-            level += reach * present * c.promoter.strength
+            level += reach * _payload_present(c.negative_literals, p) * c.promoter.strength
             floor_strength = max(floor_strength, c.promoter.strength)
 
-    # Read-through from an upstream promoter into a payload that is still present.
-    # Scaled by promoter strength, because that is where the polymerases come from --
-    # otherwise a strong promoter would appear to improve the ON/OFF ratio for free.
-    any_present = max(
+    # Upstream read-through into a still-present payload, scaled by promoter strength.
+    level += p.terminator_readthrough * 0.02 * floor_strength * max(
         (_payload_present(c.negative_literals, p) for c in relevant), default=1.0
     )
-    level += p.terminator_readthrough * 0.02 * floor_strength * any_present
     return level
 
 
 def _sensitivity(
     design: Design, relevant: list[Cassette], worst_off_minterm: int
 ) -> list[Mechanism]:
-    """Which mechanism, made perfect, most improves the worst OFF state?
-
-    Robust to the absolute parameter values being wrong, because it compares effects
-    against each other rather than against an absolute scale.
-    """
-    cas = relevant[0]
-    base_p = _midpoint_params(design, worst_off_minterm, cas)
+    """Rank mechanisms by their effect on the worst OFF state if made perfect."""
+    base_p = _midpoint_params(design, worst_off_minterm, relevant[0])
     base = _level(design, relevant, worst_off_minterm, base_p)
     if base <= 0:
         return []
 
     n = len(design.inputs)
-    out: list[Mechanism] = []
+    on = [bool((worst_off_minterm >> (n - 1 - i)) & 1) for i in range(n)]
 
-    # (a) Perfect excision: every recombinase whose input is ON fires in every cell.
-    p = Params(dict(base_p.fired), base_p.blocker_readthrough, base_p.terminator_readthrough)
-    for i in range(n):
-        if bool((worst_off_minterm >> (n - 1 - i)) & 1):
-            p.fired[i] = 1.0
-    lvl = _level(design, relevant, worst_off_minterm, p)
-    out.append(
-        Mechanism(
+    def mechanism(name: str, p: Params, advice: str) -> Mechanism:
+        lvl = _level(design, relevant, worst_off_minterm, p)
+        return Mechanism(name, lvl, (base - lvl) / base, advice)
+
+    out = [
+        mechanism(
             "incomplete excision",
-            lvl,
-            (base - lvl) / base,
+            Params(
+                {i: 1.0 if on[i] else f for i, f in base_p.fired.items()},
+                base_p.blocker_readthrough,
+                base_p.terminator_readthrough,
+            ),
             "Use a more efficient recombinase, raise its dose or expression time, or "
             "switch to an irreversible serine integrase. A tighter polyA will not help.",
-        )
-    )
-
-    # (b) No spontaneous excision in the absence of input.
-    p = Params(dict(base_p.fired), base_p.blocker_readthrough, base_p.terminator_readthrough)
-    for i in range(n):
-        if not bool((worst_off_minterm >> (n - 1 - i)) & 1):
-            p.fired[i] = 0.0
-    lvl = _level(design, relevant, worst_off_minterm, p)
-    out.append(
-        Mechanism(
+        ),
+        mechanism(
             "spontaneous recombinase activity",
-            lvl,
-            (base - lvl) / base,
+            Params(
+                {i: f if on[i] else 0.0 for i, f in base_p.fired.items()},
+                base_p.blocker_readthrough,
+                base_p.terminator_readthrough,
+            ),
             "Tighten input control: inducible or split recombinases, lower basal "
             "expression, degron-tagged recombinase.",
-        )
-    )
-
-    # (c) Perfect termination.
-    p = Params(dict(base_p.fired), 0.0, 0.0)
-    lvl = _level(design, relevant, worst_off_minterm, p)
-    out.append(
-        Mechanism(
+        ),
+        mechanism(
             "terminator read-through",
-            lvl,
-            (base - lvl) / base,
+            Params(dict(base_p.fired), 0.0, 0.0),
             "Use a tighter or tandem polyA as the blocker. Costs bp -- see the Pareto "
             "front.",
-        )
-    )
-
+        ),
+    ]
     out.sort(key=lambda m: -m.improvement)
     return out
 
@@ -268,13 +206,12 @@ def predict(
 
     relevant = [c for c in design.cassettes if output in c.outputs]
     if not relevant:
-        states = [
-            StateExpression(m, format(m, f"0{n}b"), False, 0.0, 0.0, 0.0)
-            for m in range(1 << n)
-        ]
         return LeakageReport(
             output=output,
-            states=states,
+            states=[
+                StateExpression(m, format(m, f"0{n}b"), False, 0.0, 0.0, 0.0)
+                for m in range(1 << n)
+            ],
             on_level_median=0.0,
             off_level_median=0.0,
             dynamic_range_median=1.0,
@@ -293,8 +230,7 @@ def predict(
     for _ in range(n_samples):
         levels: dict[int, float] = {}
         for m in range(1 << n):
-            p = _draw_params(rng, design, m, relevant[0])
-            lvl = _level(design, relevant, m, p)
+            lvl = _level(design, relevant, m, _draw_params(rng, design, m, relevant[0]))
             levels[m] = lvl
             per_state[m].append(lvl)
 
@@ -310,8 +246,7 @@ def predict(
         if not xs:
             return 0.0
         s = sorted(xs)
-        k = min(len(s) - 1, max(0, int(q * (len(s) - 1))))
-        return s[k]
+        return s[min(len(s) - 1, max(0, int(q * (len(s) - 1))))]
 
     states = [
         StateExpression(
@@ -343,7 +278,7 @@ def predict(
     if finite and dyn_med < 10:
         warnings.append(
             f"Predicted dynamic range is only ~{dyn_med:.1f}x. Below roughly 10x, "
-            f"flow-cytometry populations overlap and the gate will not read as digital."
+            "flow-cytometry populations overlap and the gate will not read as digital."
         )
     if worst and on_med > 0 and worst.level_median > 0.1 * on_med:
         frac = 100 * worst.level_median / on_med
@@ -356,14 +291,14 @@ def predict(
         else:
             warnings.append(
                 f"State {worst.bits} should be OFF but sits at {frac:.0f}% of the "
-                f"weakest ON state."
+                "weakest ON state."
             )
     max_blockers = max((len(c.positive_literals) for c in relevant), default=0)
     if max_blockers >= 3:
         warnings.append(
             f"One cassette carries {max_blockers} blockers in series. All must be "
-            f"excised for the term to fire, so the ON level is a product of three "
-            f"efficiencies -- expect a weak ON, not merely a clean OFF."
+            "excised for the term to fire, so the ON level is a product of three "
+            "efficiencies -- expect a weak ON, not merely a clean OFF."
         )
     n_neg = max((len(c.negative_literals) for c in relevant), default=0)
     if n_neg >= 1 and limiting and limiting.name == "incomplete excision":

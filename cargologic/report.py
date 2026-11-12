@@ -1,9 +1,4 @@
-"""Rendering the verdict.
-
-The report is the product. It leads with the answer, separates what is arithmetic from
-what is modelled, and names the specific state that will fail rather than handing back a
-single score.
-"""
+"""Text rendering of a compile result."""
 
 from __future__ import annotations
 
@@ -13,6 +8,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from .compiler import CompileResult
 
 _SEV = {"ok": "FITS", "tight": "FITS (TIGHT)", "over": "DOES NOT FIT", "infeasible": "NOT APPLICABLE"}
+_MARK = {"ok": "  ok  ", "tight": " tight", "over": " OVER ", "infeasible": "  n/a "}
 
 
 def _rule(width: int, ch: str = "-") -> str:
@@ -28,10 +24,8 @@ def render(result: "CompileResult", width: int = 80) -> str:
     d = result.design
     tv = result.target_verdict
 
-    # ---------------------------------------------------------------- headline
     out.append(_rule(width, "="))
-    verdict = _SEV.get(tv.severity, tv.severity.upper())
-    out.append(f"  {verdict}  -  {tv.vector}")
+    out.append(f"  {_SEV.get(tv.severity, tv.severity.upper())}  -  {tv.vector}")
     out.append(f"  {d.total_bp} bp circuit, {d.n_terms} cassette(s)")
     if tv.budget_bp:
         out.append(
@@ -50,7 +44,6 @@ def render(result: "CompileResult", width: int = 80) -> str:
             )
     out.append(_rule(width, "="))
 
-    # ---------------------------------------------------------------- spec
     out.append(_header("SPECIFICATION", width))
     out.append(f"inputs      {', '.join(result.spec.inputs)}")
     for f in result.spec.functions:
@@ -68,17 +61,14 @@ def render(result: "CompileResult", width: int = 80) -> str:
             f"{rec.site_bp} bp/pair, {rec.family}"
         )
 
-    # truth table
     for f in result.spec.functions:
         out.append("")
         hdr = "  " + " ".join(result.spec.inputs) + f"  |  {f.name}"
         out.append(hdr)
         out.append("  " + _rule(len(hdr) - 2))
         for bits, val in f.truth_rows():
-            spaced = " ".join(bits)
-            out.append(f"  {spaced}  |  {'1' if val else '0'}")
+            out.append(f"  {' '.join(bits)}  |  {'1' if val else '0'}")
 
-    # ---------------------------------------------------------------- logic
     out.append(_header("LOGIC MINIMISATION", width))
     out.append(
         "Each product term becomes one physical cassette, so term count is the\n"
@@ -105,7 +95,6 @@ def render(result: "CompileResult", width: int = 80) -> str:
                 + ("; ".join(bits) if bits else "ungated")
             )
 
-    # ---------------------------------------------------------------- layout
     out.append(_header("ARCHITECTURE", width))
     out.append(f"strategy    {d.strategy}")
     out.append("")
@@ -124,37 +113,26 @@ def render(result: "CompileResult", width: int = 80) -> str:
         out.append(f"  {kind:<12} {bp:>6} bp  {pct:>5.1f}%  {bar}")
     out.append(f"  {'TOTAL':<12} {d.total_bp:>6} bp")
     if d.include_recombinases:
-        out.append(
-            f"  (of which {d.recombinase_bp} bp is recombinase expression)"
-        )
+        out.append(f"  (of which {d.recombinase_bp} bp is recombinase expression)")
 
     out.append("")
     out.append(f"parts       promoter {result.choice.promoter}, "
                f"blocker {result.choice.blocker}, terminator {result.choice.terminator}")
     if result.searched:
-        out.append(
-            f"            selected by searching {len(result.candidates)} part "
-            f"combinations"
-        )
+        out.append(f"            selected by searching {len(result.candidates)} part combinations")
 
-    # ---------------------------------------------------------------- delivery
     out.append(_header("DELIVERY", width))
     out.append("This section is arithmetic over physical limits. Trust it.")
     out.append("")
     for v in result.all_verdicts:
-        mark = {"ok": "  ok  ", "tight": " tight", "over": " OVER ", "infeasible": "  n/a "}.get(
-            v.severity, "      "
-        )
-        out.append(f"  [{mark}] {v.summary()}")
+        out.append(f"  [{_MARK.get(v.severity, '      ')}] {v.summary()}")
     out.append("")
     for v in result.all_verdicts:
         if v.notes and v.severity in {"over", "tight", "infeasible"}:
             out.append(f"  {v.vector}")
             for nt in v.notes:
-                for line in _wrap(nt, width - 6):
-                    out.append(f"      {line}")
+                out.extend(f"      {line}" for line in _wrap(nt, width - 6))
 
-    # ---------------------------------------------------------------- behaviour
     out.append(_header("PREDICTED BEHAVIOUR (MODEL -- SEE CAVEATS)", width))
     for name, rep in result.leakage.items():
         out.append("")
@@ -191,28 +169,28 @@ def render(result: "CompileResult", width: int = 80) -> str:
             )
             for m in rep.mechanisms:
                 bar = "#" * int(28 * max(0.0, m.improvement))
-                out.append(
-                    f"      {m.name:<34} {100 * m.improvement:>5.1f}%  {bar}"
-                )
+                out.append(f"      {m.name:<34} {100 * m.improvement:>5.1f}%  {bar}")
             if rep.limiting:
                 out.append("")
-                for line in _wrap(f"-> {rep.limiting.advice}", width - 8):
-                    out.append(f"      {line}")
+                out.extend(
+                    f"      {line}"
+                    for line in _wrap(f"-> {rep.limiting.advice}", width - 8)
+                )
             out.append("")
-            for line in _wrap(
-                "This ranking is more trustworthy than the absolute levels above: it "
-                "compares mechanisms against each other, so it survives the parameter "
-                "estimates being off by a factor.",
-                width - 8,
-            ):
-                out.append(f"      {line}")
+            out.extend(
+                f"      {line}"
+                for line in _wrap(
+                    "This ranking is more trustworthy than the absolute levels above: it "
+                    "compares mechanisms against each other, so it survives the parameter "
+                    "estimates being off by a factor.",
+                    width - 8,
+                )
+            )
 
         for w in rep.warnings:
             out.append("")
-            for line in _wrap("! " + w, width - 6):
-                out.append(f"    {line}")
+            out.extend(f"    {line}" for line in _wrap("! " + w, width - 6))
 
-    # ---------------------------------------------------------------- pareto
     front = result.pareto
     if front and len(front) > 1:
         out.append(_header("SIZE vs DYNAMIC RANGE (PARETO FRONT)", width))
@@ -230,18 +208,14 @@ def render(result: "CompileResult", width: int = 80) -> str:
                 f"{c.choice.promoter:<9} {c.choice.blocker:<9} {c.choice.terminator}"
             )
 
-    # ---------------------------------------------------------------- notes
     if d.notes:
         out.append(_header("DESIGN NOTES", width))
         for n in d.notes:
-            for line in _wrap("- " + n, width - 2):
-                out.append(f"  {line}")
+            out.extend(f"  {line}" for line in _wrap("- " + n, width - 2))
 
-    # ---------------------------------------------------------------- caveats
     out.append(_header("CAVEATS", width))
     for c in CAVEATS:
-        for line in _wrap("- " + c, width - 2):
-            out.append(f"  {line}")
+        out.extend(f"  {line}" for line in _wrap("- " + c, width - 2))
 
     return "\n".join(out)
 
@@ -270,17 +244,17 @@ CAVEATS = [
 
 
 def _wrap(text: str, width: int) -> list[str]:
-    words = text.split()
+    indent = "  " if text.startswith(("- ", "! ")) else ""
     lines: list[str] = []
     cur = ""
-    for w in words:
+    for w in text.split():
         if not cur:
             cur = w
         elif len(cur) + 1 + len(w) <= width:
             cur += " " + w
         else:
             lines.append(cur)
-            cur = "  " + w if text.startswith(("- ", "! ")) else w
+            cur = indent + w
     if cur:
         lines.append(cur)
     return lines
